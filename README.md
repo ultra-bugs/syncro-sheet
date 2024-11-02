@@ -13,6 +13,12 @@ Laravel package for efficient synchronization between your models and Google She
 - 🚨 Comprehensive notification system
 - 🔑 Smart token management for Google API
 
+## Requirements
+
+- PHP `>= 8.1`
+- Laravel `>= 10`
+- Google API accessible
+
 ## Installation
 
 ```bash
@@ -40,12 +46,14 @@ GOOGLE_SHEETS_CLIENT_ID=your-client-id
 GOOGLE_SHEETS_CLIENT_SECRET=your-client-secret
 GOOGLE_SHEETS_REDIRECT_URI=your-redirect-uri
 ```
+As a wrapped around `revolution/laravel-google-sheets`. these env vars is taken from `config/google.php`
+
+If you already set these authorization values. You can leave env untouched.
+
 
 ### Package Configuration
 
 ```php
-// As a wrapped around `revolution/laravel-google-sheets`. I'm respecting the values in `config/google.php*
-// If you already set these authorization values. You can leave blank in this file
 // config/syncro-sheet.php
 
 return [
