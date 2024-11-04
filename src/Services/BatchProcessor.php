@@ -52,7 +52,7 @@ class BatchProcessor
             
             if (!empty($rows)) {
                 // Transform to associative arrays with headers
-                $rowsWithHeaders = $rows->map(function($row) use ($headers) {
+                $rowsWithHeaders = collect($rows)->map(function($row) use ($headers) {
                     return array_combine($headers, $row);
                 })->toArray();
 
@@ -78,19 +78,24 @@ class BatchProcessor
         ];
     }
 
+    private function getModelAndKey($modelClass): array
+    {
+        $model = new $modelClass;
+        return [$model, $model->getKeyName(),];
+    }
     /**
      * Process partial sync for specific records
      */
     public function processPartial(string $modelClass, array $recordIds, SyncState $syncState): array
     {
-        $model = new $modelClass;
+        [$model, $keyName] = $this->getModelAndKey($modelClass);
         $batchSize = $model->getBatchSize() ?? config('syncro-sheet.defaults.batch_size');
         
         $query = $this->buildPartialSyncQuery($modelClass, $recordIds);
         $totalProcessed = 0;
 
         foreach (array_chunk($recordIds, $batchSize) as $batchIds) {
-            $records = $query->whereIn('id', $batchIds)->get();
+            $records = $query->whereIn($keyName, $batchIds)->get();
             
             if ($records->isEmpty()) {
                 continue;
@@ -120,26 +125,29 @@ class BatchProcessor
 
     private function buildFullSyncQuery(string $modelClass, SyncState $syncState): Builder
     {
+        $model = new $modelClass;
+        $keyName = $model->getKeyName();
         $query = $modelClass::query();
 
         if ($syncState->last_processed_id) {
-            $query->where('id', '>', $syncState->last_processed_id);
+            $query->where($keyName, '>', $syncState->last_processed_id);
         }
 
         // Get records that haven't been synced in the last 7 days
-        $query->whereNotExists(function ($query) use ($modelClass) {
+        $query->whereNotExists(function ($query) use ($modelClass, $keyName) {
             $query->from('sync_entries')
                 ->where('model_class', $modelClass)
                 ->where('synced_at', '>', now()->subDays(7))
-                ->whereColumn('record_id', 'id');
+                ->whereColumn('record_id', $keyName);
         });
 
-        return $query->orderBy('id');
+        return $query->orderBy($keyName);
     }
 
     private function buildPartialSyncQuery(string $modelClass, array $recordIds): Builder
     {
-        return $modelClass::query()->whereIn('id', $recordIds);
+        $model = new $modelClass;
+        return $modelClass::query()->whereIn($model->getKeyName(), $recordIds);
     }
 
     private function ensureHeaders(SheetSyncable $model): array
@@ -150,20 +158,21 @@ class BatchProcessor
             $model->getSheetName()
         );
 
-        // Get expected headers from a sample transformation
-        $sampleRow = $model->toSheetRow();
-        $expectedHeaders = array_keys($sampleRow);
-
-        // If headers don't match or don't exist, set them up
-        if (empty($currentHeaders) || $currentHeaders !== $expectedHeaders) {
-            $this->googleClient->setHeaders(
-                $model->getSheetIdentifier(),
-                $model->getSheetName(),
-                $expectedHeaders
-            );
-            return $expectedHeaders;
+        if (!empty($currentHeaders)) {
+            return $currentHeaders;
         }
 
-        return $currentHeaders;
+        // Get headers in order of preference
+        $expectedHeaders = method_exists($model, 'defaultSheetHeaders')
+            ? $model->defaultSheetHeaders()
+            : array_keys($model->toSheetRow());
+
+        $this->googleClient->setHeaders(
+            $model->getSheetIdentifier(),
+            $model->getSheetName(),
+            $expectedHeaders
+        );
+
+        return $expectedHeaders;
     }
 } 

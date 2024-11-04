@@ -1,40 +1,47 @@
 {
-    "name": "zuko/syncro-sheet",
-    "description": "Laravel Google Sheets synchronization package",
-    "type": "library",
-    "license": "MIT",
-    "authors": [
-        {
-            "name": "Zuko",
-            "email": "tansautn@gmail.com"
-        }
-    ],
-    "require": {
-        "php": "^8.1",
-        "laravel/framework": "^10.0",
-        "revolution/laravel-google-sheets": "^6.0"
-    },
-    "require-dev": {
-        "phpunit/phpunit": "^10.0",
-        "orchestra/testbench": "^8.0"
-    },
-    "autoload": {
-        "psr-4": {
-            "Zuko\\SyncroSheet\\": "src/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Zuko\\SyncroSheet\\Tests\\": "tests/"
-        }
-    },
-    "extra": {
-        "laravel": {
-            "providers": [
-                "Zuko\\SyncroSheet\\LaravelSyncroSheetProvider"
-            ]
-        }
-    },
-    "minimum-stability": "dev",
-    "prefer-stable": true
+  "name"              : "zuko/syncro-sheet",
+  "replace"           : {
+    "zuko/laravel-sheet-sync"  : "self.version",
+    "zuko/eloquent-sheet-sync" : "self.version",
+    "zuko/synchro-sheet" : "self.version"
+  },
+  "description"       : "Laravel Eloquent and Google Sheets synchronization package",
+  "type"              : "library",
+  "license"           : "MIT",
+  "authors"           : [
+    {
+      "name"  : "Zuko",
+      "email" : "tansautn@gmail.com",
+      "role"  : "Developer",
+      "homepage": "https://github.com/tansautn"
+    }
+  ],
+  "require"           : {
+    "php"                              : "^8.1",
+    "illuminate/database"              : ">=10.0",
+    "revolution/laravel-google-sheets" : ">=6.0"
+  },
+  "require-dev"       : {
+    "roave/security-advisories"     : "dev-latest",
+    "laravel/pint" : ">=1.17.0"
+  },
+  "autoload"          : {
+    "psr-4" : {
+      "Zuko\\SyncroSheet\\" : "src/"
+    }
+  },
+  "autoload-dev"      : {
+    "psr-4" : {
+      "Zuko\\SyncroSheet\\Tests\\" : "tests/"
+    }
+  },
+  "extra"             : {
+    "laravel" : {
+      "providers" : [
+        "Zuko\\SyncroSheet\\LaravelSyncroSheetProvider"
+      ]
+    }
+  },
+  "minimum-stability" : "dev",
+  "prefer-stable"     : true
 }

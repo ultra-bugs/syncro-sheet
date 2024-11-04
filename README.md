@@ -46,6 +46,13 @@ GOOGLE_SHEETS_CLIENT_ID=your-client-id
 GOOGLE_SHEETS_CLIENT_SECRET=your-client-secret
 GOOGLE_SHEETS_REDIRECT_URI=your-redirect-uri
 ```
+
+Or using service account:
+
+```env
+GOOGLE_DEVELOPER_KEY=your-service-account-key
+GOOGLE_SERVICE_ENABLED=true
+```
 As a wrapped around `revolution/laravel-google-sheets`. these env vars is taken from `config/google.php`
 
 If you already set these authorization values. You can leave env untouched.

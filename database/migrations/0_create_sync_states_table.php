@@ -23,7 +23,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('sync_states', function (Blueprint $table) {
+        Schema::create('sync_states', static function (Blueprint $table) {
             $table->id();
             $table->string('model_class');
             $table->enum('sync_type', ['full', 'partial']);

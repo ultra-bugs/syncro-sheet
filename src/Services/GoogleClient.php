@@ -92,11 +92,29 @@ class GoogleClient
         
         if (is_array($serviceAccountFile)) {
             $client->setAuthConfig($serviceAccountFile);
-        } elseif (file_exists($serviceAccountFile)) {
-            $client->setAuthConfig($serviceAccountFile);
-        } else {
-            throw new GoogleSheetsException('Service account configuration file not found');
+            return;
         }
+
+        // Search for the file in multiple locations
+        $searchPaths = [
+            base_path($serviceAccountFile),
+            resource_path($serviceAccountFile),
+            resource_path('credentials' . DIRECTORY_SEPARATOR . $serviceAccountFile),
+            storage_path($serviceAccountFile),
+            storage_path('credentials' . DIRECTORY_SEPARATOR . $serviceAccountFile)
+        ];
+
+        foreach ($searchPaths as $path) {
+            if (file_exists($path) && is_readable($path)) {
+                $client->setAuthConfig($path);
+                return;
+            }
+        }
+
+        throw new GoogleSheetsException(
+            'Service account configuration file not found in any of the following locations: ' . 
+            implode(', ' . PHP_EOL, $searchPaths)
+        );
     }
 
     /**
@@ -120,19 +138,27 @@ class GoogleClient
     /**
      * Write a batch of rows to Google Sheets
      */
-    public function writeBatch(string $spreadsheetId, string $sheetName, array $rows): void
+    public function writeBatch(string $spreadsheetId, string $sheetName, array $rows, $model = null): void
     {
         $this->checkRateLimit();
 
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->append($rows);
+            $client = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
+            
+            // Check if sheet is empty and needs headers
+            $existingData = $client->all();
+            if (empty($existingData)) {
+                // Generate and write headers
+                $headers = $this->generateHeaders($model, $rows);
+                $client->update([$headers]);
+            }
+
+            // Write data
+            $client->append($rows);
 
             $this->updateRateLimit();
             
-            $this->logger->info("Written {count($rows)} rows to sheet {$sheetName}");
+            $this->logger->info("Written " . count($rows) . " rows to sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
@@ -247,6 +273,44 @@ class GoogleClient
             $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
         }
+    }
+
+    /**
+     * Generate headers from a SheetSyncable model or data
+     */
+    private function generateHeaders($model = null, array $data = []): array
+    {
+        // Try to get headers from model's defaultSheetHeaders method
+        if ($model && method_exists($model, 'defaultSheetHeaders')) {
+            return $model->defaultSheetHeaders();
+        }
+
+        // Try to get headers from first row's keys if associative
+        if (!empty($data)) {
+            $firstRow = reset($data);
+            if (is_array($firstRow) && !$this->isSequentialArray($firstRow)) {
+                return array_keys($firstRow);
+            }
+        }
+
+        // Fallback to Excel notation (A, B, C, ...)
+        $columnCount = empty($data) ? 26 : count(reset($data)); // Default to 26 columns if no data
+        return array_map(function($num) {
+            $letter = '';
+            while ($num >= 0) {
+                $letter = chr(($num % 26) + 65) . $letter;
+                $num = floor($num / 26) - 1;
+            }
+            return $letter;
+        }, range(0, $columnCount - 1));
+    }
+
+    /**
+     * Check if array is sequential (numeric keys) or associative
+     */
+    private function isSequentialArray(array $arr): bool
+    {
+        return array_keys($arr) === range(0, count($arr) - 1);
     }
 
     private function checkRateLimit(): void

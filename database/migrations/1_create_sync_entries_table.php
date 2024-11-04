@@ -23,7 +23,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('sync_entries', function (Blueprint $table) {
+        Schema::create('sync_entries', static function (Blueprint $table) {
             $table->id();
             $table->foreignId('sync_state_id')->constrained()->cascadeOnDelete();
             $table->string('model_class');

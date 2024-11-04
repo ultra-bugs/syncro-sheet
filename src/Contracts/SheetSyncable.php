@@ -38,4 +38,21 @@ interface SheetSyncable
      * Get the batch size for processing
      */
     public function getBatchSize(): ?int;
+
+    /**
+     * Get the fields used to identify unique records
+     * If not implemented, system will use auto-detection
+     */
+    public function getSheetIdentifierFields(): ?array;
+
+    /**
+     * Get the sheet row ID for this model instance
+     * Used for bi-directional sync
+     */
+    public function getSheetRowId(): ?string;
+
+    /**
+     * Set the sheet row ID for this model instance
+     */
+    public function setSheetRowId(string $rowId): void;
 }
