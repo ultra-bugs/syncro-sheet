@@ -17,12 +17,12 @@
 
 namespace Zuko\SyncroSheet;
 
+use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\ServiceProvider;
-use Zuko\SyncroSheet\Services\SyncManager;
-use Zuko\SyncroSheet\Services\StateManager;
 use Zuko\SyncroSheet\Services\BatchProcessor;
 use Zuko\SyncroSheet\Services\GoogleClient;
-use Illuminate\Foundation\AliasLoader;
+use Zuko\SyncroSheet\Services\StateManager;
+use Zuko\SyncroSheet\Services\SyncManager;
 
 class LaravelSyncroSheetProvider extends ServiceProvider
 {
@@ -47,14 +47,6 @@ class LaravelSyncroSheetProvider extends ServiceProvider
             __DIR__.'/../config/syncro-sheet.php', 'syncro-sheet'
         );
 
-        // Ensure google config is available
-        if (!$this->app->configurationIsCached()) {
-            $this->mergeConfigFrom(
-                __DIR__.'/../vendor/revolution/laravel-google-sheets/config/google.php',
-                'google'
-            );
-        }
-
         $this->app->singleton(SyncManager::class);
         $this->app->singleton(StateManager::class);
         $this->app->singleton(BatchProcessor::class);
@@ -64,4 +56,4 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $loader = AliasLoader::getInstance();
         $loader->alias('SyncroSheet', \Zuko\SyncroSheet\Facades\SyncroSheet::class);
     }
-} 
+}
