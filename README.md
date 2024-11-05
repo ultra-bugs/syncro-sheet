@@ -1,3 +1,7 @@
+# WIP
+
+This package is not avail on packagist yet. If you interesting, take a local clone or zip download then try it out.
+
 # SyncroSheet
 
 Laravel package for efficient synchronization between your models and Google Sheets with advanced state tracking and error handling.
