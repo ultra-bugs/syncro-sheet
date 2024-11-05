@@ -17,12 +17,12 @@
 
 namespace Zuko\SyncroSheet;
 
+use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\ServiceProvider;
-use Zuko\SyncroSheet\Services\SyncManager;
-use Zuko\SyncroSheet\Services\StateManager;
 use Zuko\SyncroSheet\Services\BatchProcessor;
 use Zuko\SyncroSheet\Services\GoogleClient;
-use Illuminate\Foundation\AliasLoader;
+use Zuko\SyncroSheet\Services\StateManager;
+use Zuko\SyncroSheet\Services\SyncManager;
 
 class LaravelSyncroSheetProvider extends ServiceProvider
 {
@@ -31,9 +31,7 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/syncro-sheet.php' => config_path('syncro-sheet.php'),
         ], 'config');
-
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
-
         if ($this->app->runningInConsole()) {
             $this->commands([
                 Console\Commands\SheetSyncCommand::class,
@@ -43,25 +41,26 @@ class LaravelSyncroSheetProvider extends ServiceProvider
 
     public function register()
     {
-        $this->mergeConfigFrom(
-            __DIR__.'/../config/syncro-sheet.php', 'syncro-sheet'
-        );
-
+        $this->mergeConfigFrom(__DIR__.'/../config/syncro-sheet.php',
+            'syncro-sheet');
         // Ensure google config is available
-        if (!$this->app->configurationIsCached()) {
-            $this->mergeConfigFrom(
-                __DIR__.'/../vendor/revolution/laravel-google-sheets/config/google.php',
-                'google'
-            );
-        }
+        if (! $this->app->configurationIsCached()) {
+            $revolutionConfig = base_path('vendor/revolution/laravel-google-sheets/config/google.php');
+            if (! file_exists($revolutionConfig)) {
+                $this->mergeConfigFrom(__DIR__.'/../vendor/revolution/laravel-google-sheets/config/google.php',
+                    'google');
+            } else {
+                $this->mergeConfigFrom($revolutionConfig,
+                    'google');
+            }
 
+        }
         $this->app->singleton(SyncManager::class);
         $this->app->singleton(StateManager::class);
         $this->app->singleton(BatchProcessor::class);
         $this->app->singleton(GoogleClient::class);
-
         // Register facade
         $loader = AliasLoader::getInstance();
         $loader->alias('SyncroSheet', \Zuko\SyncroSheet\Facades\SyncroSheet::class);
     }
-} 
+}

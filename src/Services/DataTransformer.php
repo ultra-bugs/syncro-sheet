@@ -43,7 +43,7 @@ class DataTransformer
     private function transformRecord(SheetSyncable $record): array
     {
         $row = $record->toSheetRow();
-        
+
         return array_map(function ($value) {
             return $this->formatValue($value);
         }, $row);
@@ -72,4 +72,4 @@ class DataTransformer
 
         return (string) $value;
     }
-} 
+}

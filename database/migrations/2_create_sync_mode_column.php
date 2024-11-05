@@ -21,26 +21,20 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    public function up(): void
+    public function up()
     {
-        Schema::create('sync_states', function (Blueprint $table) {
-            $table->id();
-            $table->string('model_class');
-            $table->enum('sync_type', ['full', 'partial']);
-            $table->enum('status', ['pending', 'running', 'completed', 'failed']);
-            $table->timestamp('started_at')->nullable();
-            $table->timestamp('completed_at')->nullable();
-            $table->integer('total_processed')->default(0);
-            $table->bigInteger('last_processed_id')->nullable();
-            $table->text('error_message')->nullable();
-            $table->timestamps();
-
-            $table->index(['model_class', 'sync_type', 'status']);
+        Schema::table('sync_states', static function (Blueprint $table) {
+            $table->enum('sync_mode', \Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES)
+                ->default(\Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES[0])
+                ->after('sync_type')
+                ->index();
         });
     }
 
-    public function down(): void
+    public function down()
     {
-        Schema::dropIfExists('sync_states');
+        Schema::table('sync_states', static function (Blueprint $table) {
+            $table->dropColumn('sync_mode');
+        });
     }
-}; 
+};

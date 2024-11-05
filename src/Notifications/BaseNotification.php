@@ -17,16 +17,17 @@
 
 namespace Zuko\SyncroSheet\Notifications;
 
-use Illuminate\Notifications\Notification;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Messages\SlackMessage;
+use Illuminate\Notifications\Notification;
 use Zuko\SyncroSheet\Models\SyncState;
 
 abstract class BaseNotification extends Notification
 {
     public function __construct(
         protected SyncState $syncState
-    ) {}
+    ) {
+    }
 
     public function via($notifiable): array
     {
@@ -39,5 +40,6 @@ abstract class BaseNotification extends Notification
     }
 
     abstract protected function getMailMessage(): MailMessage;
+
     abstract protected function getSlackMessage(): SlackMessage;
-} 
+}

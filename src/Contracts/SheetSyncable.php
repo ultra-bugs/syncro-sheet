@@ -33,9 +33,4 @@ interface SheetSyncable
      * Transform the model instance to a sheet row
      */
     public function toSheetRow(): array;
-
-    /**
-     * Get the batch size for processing
-     */
-    public function getBatchSize(): ?int;
 }

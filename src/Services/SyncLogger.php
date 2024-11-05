@@ -18,8 +18,8 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Support\Facades\Log;
-use Monolog\Logger;
 use Monolog\Handler\RotatingFileHandler;
+use Monolog\Logger;
 
 class SyncLogger
 {
@@ -53,7 +53,7 @@ class SyncLogger
             $logger->pushHandler(new RotatingFileHandler(
                 storage_path('logs/sheet-sync.log'),
                 30,
-                Logger::INFO
+                config('syncro-sheet.logging.level', 'debug')
             ));
         } else {
             $logger->pushHandler(Log::channel(
@@ -63,4 +63,4 @@ class SyncLogger
 
         return $logger;
     }
-} 
+}

@@ -23,6 +23,7 @@ use Revolution\Google\Sheets\Facades\Sheets;
 class TokenManager
 {
     private const CACHE_KEY = 'google_sheets_token';
+
     private const TOKEN_BUFFER = 300; // 5 minutes buffer before expiration
 
     /**
@@ -50,8 +51,8 @@ class TokenManager
     private function shouldRefreshToken(): bool
     {
         $tokenData = Cache::get(self::CACHE_KEY);
-        
-        if (!$tokenData) {
+
+        if (! $tokenData) {
             return true;
         }
 
@@ -66,4 +67,4 @@ class TokenManager
             $this->storeToken($client->getAccessToken());
         }
     }
-} 
+}

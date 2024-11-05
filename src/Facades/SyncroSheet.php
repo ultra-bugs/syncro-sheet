@@ -24,7 +24,7 @@ use Zuko\SyncroSheet\Services\SyncManager;
  * @method static \Zuko\SyncroSheet\Models\SyncState fullSync(string $modelClass)
  * @method static \Zuko\SyncroSheet\Models\SyncState partialSync(string $modelClass, array $recordIds)
  * @method static \Zuko\SyncroSheet\Models\SyncState|null getLastSync(string $modelClass)
- * 
+ *
  * @see \Zuko\SyncroSheet\Services\SyncManager
  */
 class SyncroSheet extends Facade
@@ -33,4 +33,4 @@ class SyncroSheet extends Facade
     {
         return SyncManager::class;
     }
-} 
+}

@@ -1,3 +1,7 @@
+# WIP
+
+This package is not avail on packagist yet. If you interesting, take a local clone or zip download then try it out.
+
 # SyncroSheet
 
 Laravel package for efficient synchronization between your models and Google Sheets with advanced state tracking and error handling.
@@ -45,6 +49,13 @@ php artisan migrate
 GOOGLE_SHEETS_CLIENT_ID=your-client-id
 GOOGLE_SHEETS_CLIENT_SECRET=your-client-secret
 GOOGLE_SHEETS_REDIRECT_URI=your-redirect-uri
+```
+
+Or using service account:
+
+```env
+GOOGLE_DEVELOPER_KEY=your-service-account-key
+GOOGLE_SERVICE_ENABLED=true
 ```
 As a wrapped around `revolution/laravel-google-sheets`. these env vars is taken from `config/google.php`
 

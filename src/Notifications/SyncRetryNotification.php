@@ -35,8 +35,8 @@ class SyncRetryNotification extends BaseNotification
         return (new MailMessage)
             ->subject("Sheet Sync Retry: {$this->getModelName()}")
             ->line("Attempting retry #{$this->retryCount} for {$this->getModelName()} sync.")
-            ->line("Failed records: " . count($this->failedRecords))
-            ->line("Next retry scheduled in: " . $this->getRetryDelay() . " minutes");
+            ->line('Failed records: '.count($this->failedRecords))
+            ->line('Next retry scheduled in: '.$this->getRetryDelay().' minutes');
     }
 
     protected function getSlackMessage(): SlackMessage
@@ -49,7 +49,7 @@ class SyncRetryNotification extends BaseNotification
                     ->fields([
                         'Retry Attempt' => $this->retryCount,
                         'Failed Records' => count($this->failedRecords),
-                        'Next Retry In' => $this->getRetryDelay() . ' minutes',
+                        'Next Retry In' => $this->getRetryDelay().' minutes',
                     ]);
             });
     }
@@ -58,4 +58,4 @@ class SyncRetryNotification extends BaseNotification
     {
         return pow(2, $this->retryCount - 1);
     }
-} 
+}
