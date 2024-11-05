@@ -35,15 +35,15 @@ class BatchProcessor
     /**
      * Process full sync in batches
      */
-    public function process(string $modelClass, SyncState $syncState): array
+    public function process(string $modelClass, SyncState $syncState, string $syncMode = null): array
     {
         $model = new $modelClass;
         $batchSize = method_exists($model, 'getBatchSize') 
             ? $model->getBatchSize() 
             : config('syncro-sheet.defaults.batch_size');
-        
+        $syncMode = $syncMode ?? $syncState->sync_mode;
         // Handle replace mode by clearing sheet first
-        if ($syncState->sync_mode === 'replace') {
+        if ($syncMode === 'replace') {
             $this->googleClient->clearSheet(
                 $model->getSheetIdentifier(),
                 $model->getSheetName()
