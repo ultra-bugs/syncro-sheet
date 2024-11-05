@@ -43,4 +43,4 @@ class SyncState extends Model
     {
         return $this->hasMany(SyncEntry::class);
     }
-} 
+}

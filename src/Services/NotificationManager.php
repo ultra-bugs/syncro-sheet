@@ -19,11 +19,11 @@ namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
-use Zuko\SyncroSheet\Models\SyncState;
 use Zuko\SyncroSheet\Events\SyncEvent;
+use Zuko\SyncroSheet\Models\SyncState;
+use Zuko\SyncroSheet\Notifications\SyncCompletedNotification;
 use Zuko\SyncroSheet\Notifications\SyncFailedNotification;
 use Zuko\SyncroSheet\Notifications\SyncRetryNotification;
-use Zuko\SyncroSheet\Notifications\SyncCompletedNotification;
 
 class NotificationManager
 {
@@ -42,7 +42,7 @@ class NotificationManager
     {
         Event::dispatch(SyncEvent::CHUNK_PROCESSED, [
             'sync_state' => $syncState,
-            'processed' => $processed
+            'processed' => $processed,
         ]);
     }
 
@@ -79,7 +79,7 @@ class NotificationManager
     {
         Event::dispatch(SyncEvent::SYNC_FAILED, [
             'sync_state' => $syncState,
-            'error' => $exception->getMessage()
+            'error' => $exception->getMessage(),
         ]);
 
         if (config('syncro-sheet.notifications.notify_on.error')) {
@@ -90,7 +90,7 @@ class NotificationManager
     private function sendNotification($notification): void
     {
         $channels = config('syncro-sheet.notifications.channels', ['mail']);
-        
+
         foreach ($channels as $channel) {
             if ($channel === 'mail') {
                 Notification::route('mail', config('syncro-sheet.notifications.mail_to'))
@@ -101,4 +101,4 @@ class NotificationManager
             }
         }
     }
-} 
+}

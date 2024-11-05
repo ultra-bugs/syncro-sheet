@@ -65,4 +65,4 @@ return [
             'sync_completed' => false,
         ],
     ],
-]; 
+];

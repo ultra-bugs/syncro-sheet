@@ -17,15 +17,15 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Zuko\SyncroSheet\Models\SyncState;
-use Zuko\SyncroSheet\Models\SyncEntry;
 use Illuminate\Support\Facades\DB;
+use Zuko\SyncroSheet\Models\SyncState;
 
 class StateManager
 {
     public function __construct(
         private readonly SyncLogger $logger
-    ) {}
+    ) {
+    }
 
     /**
      * Initialize a new sync state
@@ -106,4 +106,4 @@ class StateManager
             ->latest('completed_at')
             ->first();
     }
-} 
+}

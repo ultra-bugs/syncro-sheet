@@ -24,13 +24,16 @@ use Zuko\SyncroSheet\Exceptions\SyncException;
 class SheetRowMapper
 {
     private const HASH_COLUMN = '_record_hash';
+
     private const ROW_INDEX_COLUMN = '_row_index';
+
     private FuzzyRecordIdentifier $fuzzyIdentifier;
 
-    public function __construct(FuzzyRecordIdentifier $fuzzyIdentifier = null)
+    public function __construct(?FuzzyRecordIdentifier $fuzzyIdentifier = null)
     {
         $this->fuzzyIdentifier = $fuzzyIdentifier ?? new FuzzyRecordIdentifier();
     }
+
     /**
      * Generate a unique hash for a model instance
      */
@@ -69,7 +72,7 @@ class SheetRowMapper
     public function mapRecordsToSheet(Collection $records, array $sheetData): array
     {
         $headerRow = array_shift($sheetData);
-        if (!$headerRow) {
+        if (! $headerRow) {
             return $this->prepareNewSheetData($records);
         }
 
@@ -115,7 +118,7 @@ class SheetRowMapper
         return [
             'header' => $headerRow,
             'updates' => $updates,
-            'new_rows' => $newRows
+            'new_rows' => $newRows,
         ];
     }
 
@@ -128,7 +131,7 @@ class SheetRowMapper
             return [
                 'header' => [],
                 'updates' => [],
-                'new_rows' => []
+                'new_rows' => [],
             ];
         }
 
@@ -148,7 +151,7 @@ class SheetRowMapper
         return [
             'header' => $header,
             'updates' => [],
-            'new_rows' => $rows
+            'new_rows' => $rows,
         ];
     }
 

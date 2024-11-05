@@ -17,7 +17,6 @@
 
 namespace Zuko\SyncroSheet;
 
-
 use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\ServiceProvider;
 use Zuko\SyncroSheet\Services\BatchProcessor;
@@ -30,29 +29,29 @@ class LaravelSyncroSheetProvider extends ServiceProvider
     public function boot()
     {
         $this->publishes([
-                             __DIR__ . '/../config/syncro-sheet.php' => config_path('syncro-sheet.php'),
-                         ], 'config');
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+            __DIR__.'/../config/syncro-sheet.php' => config_path('syncro-sheet.php'),
+        ], 'config');
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         if ($this->app->runningInConsole()) {
             $this->commands([
-                                Console\Commands\SheetSyncCommand::class,
-                            ]);
+                Console\Commands\SheetSyncCommand::class,
+            ]);
         }
     }
 
     public function register()
     {
-        $this->mergeConfigFrom(__DIR__ . '/../config/syncro-sheet.php',
-                               'syncro-sheet');
+        $this->mergeConfigFrom(__DIR__.'/../config/syncro-sheet.php',
+            'syncro-sheet');
         // Ensure google config is available
-        if (!$this->app->configurationIsCached()) {
+        if (! $this->app->configurationIsCached()) {
             $revolutionConfig = base_path('vendor/revolution/laravel-google-sheets/config/google.php');
-            if (!file_exists($revolutionConfig)) {
-                $this->mergeConfigFrom(__DIR__ . '/../vendor/revolution/laravel-google-sheets/config/google.php',
-                                       'google');
+            if (! file_exists($revolutionConfig)) {
+                $this->mergeConfigFrom(__DIR__.'/../vendor/revolution/laravel-google-sheets/config/google.php',
+                    'google');
             } else {
                 $this->mergeConfigFrom($revolutionConfig,
-                                       'google');
+                    'google');
             }
 
         }

@@ -19,18 +19,22 @@ namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class FuzzyRecordIdentifier
 {
     private const MIN_STRING_LENGTH = 10;
+
     private const MAX_STRING_LENGTH = 150;
+
     private const MIN_IDENTIFYING_FIELDS = 2;
+
     private const MAX_IDENTIFYING_FIELDS = 5;
+
     private const SCORE_THRESHOLD = 0.6;
 
     private array $fieldScores = [];
+
     private array $schemaInfo = [];
 
     /**
@@ -57,7 +61,7 @@ class FuzzyRecordIdentifier
 
         $identifyingFields = array_filter(
             $this->fieldScores,
-            fn($score) => $score >= self::SCORE_THRESHOLD
+            fn ($score) => $score >= self::SCORE_THRESHOLD
         );
 
         // Take best fields within our limits
@@ -80,7 +84,7 @@ class FuzzyRecordIdentifier
         }
 
         // Ensure created_at is always included if the model has timestamps
-        if ($model->timestamps && !in_array('created_at', $identifyingFields)) {
+        if ($model->timestamps && ! in_array('created_at', $identifyingFields)) {
             $identifyingFields[] = 'created_at';
         }
 
@@ -97,15 +101,15 @@ class FuzzyRecordIdentifier
 
             // Get indexes
             $indexes = Schema::getConnection()
-                             ->getDoctrineSchemaManager()
-                             ->listTableIndexes($table);
+                ->getDoctrineSchemaManager()
+                ->listTableIndexes($table);
 
             foreach ($indexes as $index) {
                 $columns = $index->getColumns();
                 $score = $this->getIndexScore($index);
 
                 foreach ($columns as $column) {
-                    if (!isset($this->schemaInfo[$column])) {
+                    if (! isset($this->schemaInfo[$column])) {
                         $this->schemaInfo[$column] = 0;
                     }
                     $this->schemaInfo[$column] = max($this->schemaInfo[$column], $score);
@@ -114,8 +118,8 @@ class FuzzyRecordIdentifier
 
             // Get foreign keys
             $foreignKeys = Schema::getConnection()
-                                 ->getDoctrineSchemaManager()
-                                 ->listTableForeignKeys($table);
+                ->getDoctrineSchemaManager()
+                ->listTableForeignKeys($table);
 
             foreach ($foreignKeys as $foreignKey) {
                 $columns = $foreignKey->getLocalColumns();
@@ -129,11 +133,11 @@ class FuzzyRecordIdentifier
 
             // Get nullable information
             $columns = Schema::getConnection()
-                             ->getDoctrineSchemaManager()
-                             ->listTableColumns($table);
+                ->getDoctrineSchemaManager()
+                ->listTableColumns($table);
 
             foreach ($columns as $column) {
-                if (!$column->getNotnull()) {
+                if (! $column->getNotnull()) {
                     $this->schemaInfo[$column->getName()] =
                         ($this->schemaInfo[$column->getName()] ?? 0) * 0.8;  // Penalty for nullable
                 }
@@ -200,6 +204,7 @@ class FuzzyRecordIdentifier
             if ($this->isLikelyCreationDate($value)) {
                 return 0.8;
             }
+
             return 0.2;
         }
 
@@ -234,7 +239,7 @@ class FuzzyRecordIdentifier
 
             // Prefer numbers with 0-3 decimal places
             if (is_float($value)) {
-                $decimals = strlen(substr(strrchr((string)$value, "."), 1));
+                $decimals = strlen(substr(strrchr((string) $value, '.'), 1));
                 if ($decimals > 0 && $decimals <= 3) {
                     return 0.5;
                 }
@@ -248,6 +253,7 @@ class FuzzyRecordIdentifier
             if ($this->isSimpleArrayOrObject($value)) {
                 return 0.3;
             }
+
             return 0;
         }
 
@@ -295,7 +301,7 @@ class FuzzyRecordIdentifier
             'creation_date',
             'registered_at',
             'joined_at',
-            'published_at'
+            'published_at',
         ];
 
         foreach ($creationPatterns as $pattern) {
@@ -312,11 +318,12 @@ class FuzzyRecordIdentifier
      */
     private function looksLikeJson(string $value): bool
     {
-        if (!in_array($value[0] ?? '', ['{', '['])) {
+        if (! in_array($value[0] ?? '', ['{', '['])) {
             return false;
         }
 
         json_decode($value);
+
         return json_last_error() === JSON_ERROR_NONE;
     }
 
@@ -326,6 +333,7 @@ class FuzzyRecordIdentifier
     private function containsEmoji(string $value): bool
     {
         $emojiPattern = '/[\x{1F300}-\x{1F64F}]|[\x{1F680}-\x{1F6FF}]|[\x{2600}-\x{26FF}]|[\x{2700}-\x{27BF}]|[\x{1F900}-\x{1F9FF}]|[\x{1F1E0}-\x{1F1FF}]/u';
+
         return preg_match($emojiPattern, $value) === 1;
     }
 
@@ -334,7 +342,7 @@ class FuzzyRecordIdentifier
      */
     private function isSimpleArrayOrObject($value): bool
     {
-        $array = (array)$value;
+        $array = (array) $value;
 
         // Too many elements
         if (count($array) > 3) {

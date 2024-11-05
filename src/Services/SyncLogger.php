@@ -18,8 +18,8 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Support\Facades\Log;
-use Monolog\Logger;
 use Monolog\Handler\RotatingFileHandler;
+use Monolog\Logger;
 
 class SyncLogger
 {
@@ -63,4 +63,4 @@ class SyncLogger
 
         return $logger;
     }
-} 
+}

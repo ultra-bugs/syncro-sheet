@@ -20,7 +20,10 @@ namespace Zuko\SyncroSheet\Events;
 class SyncEvent
 {
     const SYNC_STARTED = 'sync.started';
+
     const CHUNK_PROCESSED = 'sync.chunk_processed';
+
     const SYNC_COMPLETED = 'sync.completed';
+
     const SYNC_FAILED = 'sync.failed';
-} 
+}

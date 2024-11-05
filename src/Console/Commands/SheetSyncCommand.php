@@ -33,15 +33,15 @@ class SheetSyncCommand extends Command
     public function handle(SyncManager $syncManager): int
     {
         $modelClass = $this->argument('model');
-        
+
         // Add namespace if not provided
-        if (!str_contains($modelClass, '\\')) {
-            $modelClass = 'App\\Models\\' . $modelClass;
+        if (! str_contains($modelClass, '\\')) {
+            $modelClass = 'App\\Models\\'.$modelClass;
         }
 
         $ids = $this->option('ids');
         $mode = $this->option('mode');
-        if(!$mode && $this->option('force')){
+        if (! $mode && $this->option('force')) {
             $mode = 'replace';
         }
         try {
@@ -50,15 +50,17 @@ class SheetSyncCommand extends Command
                 $syncState = $syncManager->fullSync($modelClass, ['sync_mode' => $mode]);
             } else {
                 $ids = is_array($ids) ? $ids : explode(',', $ids[0]);
-                $this->info("Starting partial sync for {$modelClass} with IDs: " . implode(', ', $ids));
+                $this->info("Starting partial sync for {$modelClass} with IDs: ".implode(', ', $ids));
                 $syncState = $syncManager->partialSync($modelClass, $ids, ['sync_mode' => $mode]);
             }
 
             $this->info("Sync completed! Processed {$syncState->total_processed} records.");
+
             return self::SUCCESS;
         } catch (\Exception $e) {
             $this->error("Sync failed: {$e->getMessage()}");
+
             return self::FAILURE;
         }
     }
-} 
+}

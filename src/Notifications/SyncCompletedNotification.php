@@ -44,4 +44,4 @@ class SyncCompletedNotification extends BaseNotification
                     ]);
             });
     }
-} 
+}

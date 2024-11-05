@@ -17,20 +17,22 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Revolution\Google\Sheets\Facades\Sheets;
 use Google\Client as GoogleAPIClient;
 use Google\Service\Sheets as GoogleSheets;
+use Revolution\Google\Sheets\Facades\Sheets;
 use Zuko\SyncroSheet\Exceptions\GoogleSheetsException;
 
 class GoogleClient
 {
     private array $rateLimits = [];
+
     private $sheetsClient = null;
 
     public function __construct(
         private readonly TokenManager $tokenManager,
         private readonly SyncLogger $logger
-    ) {}
+    ) {
+    }
 
     /**
      * Get or initialize the Sheets client
@@ -48,17 +50,17 @@ class GoogleClient
         } else {
             // Non-Laravel environment - manual setup using config
             $client = new GoogleAPIClient($this->getGoogleConfig());
-            
+
             // Set required scopes for sheets
             $client->setScopes([GoogleSheets::DRIVE, GoogleSheets::SPREADSHEETS]);
-            
+
             // Handle authentication based on config
             if (config('google.service.enable')) {
                 $this->setupServiceAccount($client);
             } else {
                 $this->setupOAuth($client);
             }
-            
+
             $service = new GoogleSheets($client);
             $this->sheetsClient = Sheets::setService($service);
         }
@@ -72,10 +74,10 @@ class GoogleClient
     private function getGoogleConfig(): array
     {
         $config = config('google.config', []);
-        
+
         // Add basic configuration
         $config['application_name'] = config('google.application_name');
-        
+
         if (config('google.developer_key')) {
             $config['developer_key'] = config('google.developer_key');
         }
@@ -89,9 +91,10 @@ class GoogleClient
     private function setupServiceAccount(GoogleAPIClient $client): void
     {
         $serviceAccountFile = config('google.service.file');
-        
+
         if (is_array($serviceAccountFile)) {
             $client->setAuthConfig($serviceAccountFile);
+
             return;
         }
 
@@ -99,21 +102,22 @@ class GoogleClient
         $searchPaths = [
             base_path($serviceAccountFile),
             resource_path($serviceAccountFile),
-            resource_path('credentials' . DIRECTORY_SEPARATOR . $serviceAccountFile),
+            resource_path('credentials'.DIRECTORY_SEPARATOR.$serviceAccountFile),
             storage_path($serviceAccountFile),
-            storage_path('credentials' . DIRECTORY_SEPARATOR . $serviceAccountFile)
+            storage_path('credentials'.DIRECTORY_SEPARATOR.$serviceAccountFile),
         ];
 
         foreach ($searchPaths as $path) {
             if (file_exists($path) && is_readable($path)) {
                 $client->setAuthConfig($path);
+
                 return;
             }
         }
 
         throw new GoogleSheetsException(
-            'Service account configuration file not found in any of the following locations: ' . 
-            implode(', ' . PHP_EOL, $searchPaths)
+            'Service account configuration file not found in any of the following locations: '.
+            implode(', '.PHP_EOL, $searchPaths)
         );
     }
 
@@ -127,7 +131,7 @@ class GoogleClient
         $client->setRedirectUri(config('google.redirect_uri'));
         $client->setAccessType(config('google.access_type', 'online'));
         $client->setApprovalPrompt(config('google.approval_prompt', 'auto'));
-        
+
         // Set the token if available
         $token = $this->tokenManager->getToken();
         if ($token) {
@@ -144,7 +148,7 @@ class GoogleClient
 
         try {
             $client = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
-            
+
             // Check if sheet is empty and needs headers
             $existingData = $client->all();
             if (empty($existingData)) {
@@ -157,8 +161,8 @@ class GoogleClient
             $client->append($rows);
 
             $this->updateRateLimit();
-            
-            $this->logger->info("Written " . count($rows) . " rows to sheet {$sheetName}");
+
+            $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
@@ -179,7 +183,7 @@ class GoogleClient
                 ->clear();
 
             $this->updateRateLimit();
-            
+
             $this->logger->info("Cleared sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to clear sheet: {$e->getMessage()}");
@@ -201,7 +205,7 @@ class GoogleClient
                 ->all();
 
             $this->updateRateLimit();
-            
+
             return $values;
         } catch (\Exception $e) {
             $this->logger->error("Failed to read from Google Sheets: {$e->getMessage()}");
@@ -223,7 +227,7 @@ class GoogleClient
                 ->all();
 
             $this->updateRateLimit();
-            
+
             return $rows[0] ?? [];
         } catch (\Exception $e) {
             $this->logger->error("Failed to get headers: {$e->getMessage()}");
@@ -245,7 +249,7 @@ class GoogleClient
                 ->update([$headers]); // Update first row with headers
 
             $this->updateRateLimit();
-            
+
             $this->logger->info("Set headers in sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to set headers: {$e->getMessage()}");
@@ -267,8 +271,8 @@ class GoogleClient
                 ->append($rows); // The client will handle header matching
 
             $this->updateRateLimit();
-            
-            $this->logger->info("Written " . count($rows) . " rows to sheet {$sheetName}");
+
+            $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
@@ -286,21 +290,23 @@ class GoogleClient
         }
 
         // Try to get headers from first row's keys if associative
-        if (!empty($data)) {
+        if (! empty($data)) {
             $firstRow = reset($data);
-            if (is_array($firstRow) && !$this->isSequentialArray($firstRow)) {
+            if (is_array($firstRow) && ! $this->isSequentialArray($firstRow)) {
                 return array_keys($firstRow);
             }
         }
 
         // Fallback to Excel notation (A, B, C, ...)
         $columnCount = empty($data) ? 26 : count(reset($data)); // Default to 26 columns if no data
-        return array_map(function($num) {
+
+        return array_map(function ($num) {
             $letter = '';
             while ($num >= 0) {
-                $letter = chr(($num % 26) + 65) . $letter;
+                $letter = chr(($num % 26) + 65).$letter;
                 $num = floor($num / 26) - 1;
             }
+
             return $letter;
         }, range(0, $columnCount - 1));
     }
@@ -335,4 +341,4 @@ class GoogleClient
     {
         $this->rateLimits[] = time();
     }
-} 
+}

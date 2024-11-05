@@ -31,7 +31,8 @@ class PartialSyncJob implements ShouldQueue
     public function __construct(
         private readonly string $modelClass,
         private readonly array $recordIds
-    ) {}
+    ) {
+    }
 
     public function handle(SyncManager $syncManager): void
     {
@@ -61,4 +62,4 @@ class PartialSyncJob implements ShouldQueue
     {
         return 3;
     }
-} 
+}

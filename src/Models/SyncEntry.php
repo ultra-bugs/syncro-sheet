@@ -40,4 +40,4 @@ class SyncEntry extends Model
     {
         return $this->belongsTo(SyncState::class);
     }
-} 
+}

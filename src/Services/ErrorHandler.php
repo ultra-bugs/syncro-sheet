@@ -17,8 +17,8 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Zuko\SyncroSheet\Models\SyncState;
 use Illuminate\Support\Facades\DB;
+use Zuko\SyncroSheet\Models\SyncState;
 
 class ErrorHandler
 {
@@ -26,7 +26,8 @@ class ErrorHandler
         private readonly NotificationManager $notificationManager,
         private readonly SyncLogger $logger,
         private readonly int $maxRetries = 3
-    ) {}
+    ) {
+    }
 
     /**
      * Handle sync error
@@ -87,4 +88,4 @@ class ErrorHandler
             new \Zuko\SyncroSheet\Jobs\PartialSyncJob($modelClass, $recordIds)
         );
     }
-} 
+}
