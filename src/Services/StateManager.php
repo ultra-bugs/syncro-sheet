@@ -30,11 +30,12 @@ class StateManager
     /**
      * Initialize a new sync state
      */
-    public function initializeSync(string $modelClass, string $syncType): SyncState
+    public function initializeSync(string $modelClass, string $syncType, string $syncMode): SyncState
     {
         return SyncState::create([
             'model_class' => $modelClass,
             'sync_type' => $syncType,
+            'sync_mode' => $syncMode,
             'status' => 'running',
             'started_at' => now(),
         ]);

@@ -24,7 +24,9 @@ class SheetSyncCommand extends Command
 {
     protected $signature = 'sheet:sync 
                           {model : The model class to sync}
-                          {--ids=* : Specific record IDs for partial sync}';
+                          {--ids=* : Specific record IDs for partial sync}
+                          {--M|mode= : Sync mode (append/replace)}
+                          {--F|force : using replace mode}';
 
     protected $description = 'Sync model data with Google Sheets';
 
@@ -38,15 +40,18 @@ class SheetSyncCommand extends Command
         }
 
         $ids = $this->option('ids');
-        
+        $mode = $this->option('mode');
+        if(!$mode && $this->option('force')){
+            $mode = 'replace';
+        }
         try {
             if (empty($ids)) {
                 $this->info("Starting full sync for {$modelClass}");
-                $syncState = $syncManager->fullSync($modelClass);
+                $syncState = $syncManager->fullSync($modelClass, ['sync_mode' => $mode]);
             } else {
                 $ids = is_array($ids) ? $ids : explode(',', $ids[0]);
                 $this->info("Starting partial sync for {$modelClass} with IDs: " . implode(', ', $ids));
-                $syncState = $syncManager->partialSync($modelClass, $ids);
+                $syncState = $syncManager->partialSync($modelClass, $ids, ['sync_mode' => $mode]);
             }
 
             $this->info("Sync completed! Processed {$syncState->total_processed} records.");

@@ -22,7 +22,8 @@ return [
     |--------------------------------------------------------------------------
     */
     'defaults' => [
-        'batch_size' => 1000,
+        'batch_size' => 100,
+        'sync_mode' => 'append',
         'timeout' => 600,
         'retries' => 3,
     ],
@@ -33,8 +34,8 @@ return [
     |--------------------------------------------------------------------------
     */
     'logging' => [
-        'channel' => 'sheet-sync',
-        'level' => 'info',
+        'channel' => env('SHEET_SYNC_LOG_CHANNEL', 'sheet-sync'),
+        'level' => env('SHEET_SYNC_LOG_LEVEL', 'info'),
         'separate_files' => true,
     ],
 

@@ -38,7 +38,17 @@ class BatchProcessor
     public function process(string $modelClass, SyncState $syncState): array
     {
         $model = new $modelClass;
-        $batchSize = $model->getBatchSize() ?? config('syncro-sheet.defaults.batch_size');
+        $batchSize = method_exists($model, 'getBatchSize') 
+            ? $model->getBatchSize() 
+            : config('syncro-sheet.defaults.batch_size');
+        
+        // Handle replace mode by clearing sheet first
+        if ($syncState->sync_mode === 'replace') {
+            $this->googleClient->clearSheet(
+                $model->getSheetIdentifier(),
+                $model->getSheetName()
+            );
+        }
         
         // First, ensure headers are set up
         $headers = $this->ensureHeaders($model);
@@ -55,7 +65,6 @@ class BatchProcessor
                 $rowsWithHeaders = collect($rows)->map(function($row) use ($headers) {
                     return array_combine($headers, $row);
                 })->toArray();
-
                 $this->googleClient->appendWithHeaders(
                     $model->getSheetIdentifier(),
                     $model->getSheetName(),
@@ -63,11 +72,11 @@ class BatchProcessor
                 );
             }
 
-            $processedIds = $records->pluck('id')->toArray();
+            $processedIds = $records->pluck($model->getKeyName())->toArray();
             $this->stateManager->recordBatchSync($syncState, $processedIds);
             
             $totalProcessed += count($records);
-            $lastProcessedId = $records->last()->id;
+            $lastProcessedId = $records->last()->{$model->getKeyName()};
             
             $this->logger->info("Processed batch of {$records->count()} records for {$syncState->model_class}");
         });
@@ -78,7 +87,7 @@ class BatchProcessor
         ];
     }
 
-    private function getModelAndKey($modelClass): array
+    private function getModelAndKeyName($modelClass): array
     {
         $model = new $modelClass;
         return [$model, $model->getKeyName(),];
@@ -88,17 +97,18 @@ class BatchProcessor
      */
     public function processPartial(string $modelClass, array $recordIds, SyncState $syncState): array
     {
-        [$model, $keyName] = $this->getModelAndKey($modelClass);
-        $batchSize = $model->getBatchSize() ?? config('syncro-sheet.defaults.batch_size');
+        $model = new $modelClass;
+        $batchSize = method_exists($model, 'getBatchSize') 
+            ? $model->getBatchSize() 
+            : config('syncro-sheet.defaults.batch_size');
         
         $query = $this->buildPartialSyncQuery($modelClass, $recordIds);
         $totalProcessed = 0;
+        $lastProcessedId = null;
 
-        foreach (array_chunk($recordIds, $batchSize) as $batchIds) {
-            $records = $query->whereIn($keyName, $batchIds)->get();
-            
+        $query->lazy()->chunk($batchSize)->each(function ($records) use ($model, $syncState, &$totalProcessed, &$lastProcessedId) {
             if ($records->isEmpty()) {
-                continue;
+                return true;
             }
 
             $rows = $this->transformer->transformBatch($records);
@@ -111,15 +121,20 @@ class BatchProcessor
                 );
             }
 
-            $this->stateManager->recordBatchSync($syncState, $batchIds);
+            $processedIds = $records->pluck($model->getKeyName())->toArray();
+            $this->stateManager->recordBatchSync($syncState, $processedIds);
+            
             $totalProcessed += count($records);
+            $lastProcessedId = $records->last()->{$model->getKeyName()};
             
             $this->logger->info("Processed partial batch of {$records->count()} records for {$syncState->model_class}");
-        }
+
+            return true;
+        });
 
         return [
             'total_processed' => $totalProcessed,
-            'last_processed_id' => max($recordIds)
+            'last_processed_id' => $lastProcessedId
         ];
     }
 
@@ -146,8 +161,11 @@ class BatchProcessor
 
     private function buildPartialSyncQuery(string $modelClass, array $recordIds): Builder
     {
-        $model = new $modelClass;
-        return $modelClass::query()->whereIn($model->getKeyName(), $recordIds);
+        [$model, $keyName] = $this->getModelAndKeyName($modelClass);
+        
+        return $modelClass::query()
+            ->whereIn($keyName, $recordIds)
+            ->orderBy($keyName);
     }
 
     private function ensureHeaders(SheetSyncable $model): array
