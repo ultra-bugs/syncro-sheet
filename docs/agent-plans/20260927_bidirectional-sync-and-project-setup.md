@@ -192,7 +192,7 @@ flowchart TB
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Running : StateManager::initializeSync()
+    [*] --> Running : "StateManager\:\:initializeSync()"
     
     Running --> Completed : all batches processed
     Running --> Failed : exception caught
@@ -213,12 +213,17 @@ stateDiagram-v2
         }
 
         state "WriteBackIds (when idColumnOnSheet)" as WriteBackIds {
+            RS --> FW
+            FW --> FM
+            FM --> UC
+            
             state "Read sheet data" as RS
             state "Find rows without ID" as FW
             state "Match DB rows via fuzzy compare" as FM
-            state "GoogleClient::updateCell" as UC
-            RS --> FW --> FM --> UC
+            state "GoogleClient::updateCell" as UC             
         }
+        
+        
     }
 
     Completed --> [*]
