@@ -3,6 +3,7 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Contracts\BidirectionalSyncable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 
 class RecordMatcher
@@ -67,7 +68,7 @@ class RecordMatcher
      */
     public function detectChanges(SheetSyncable $model, array $matchedRows): array
     {
-        if (! method_exists($model, 'fromSheetRow')) {
+        if (! $model instanceof BidirectionalSyncable) {
             return [];
         }
 

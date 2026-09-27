@@ -7,6 +7,7 @@ use Zuko\SyncroSheet\Exceptions\SyncException;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\SyncManager;
 use Zuko\SyncroSheet\Tests\Fixtures\FakeProduct;
+use Zuko\SyncroSheet\Tests\Fixtures\OneWayProduct;
 use Zuko\SyncroSheet\Tests\TestCase;
 
 class SyncManagerTest extends TestCase
@@ -79,25 +80,27 @@ class SyncManagerTest extends TestCase
         $manager->partialSync('App\Models\DoesNotExist', [1]);
     }
 
-    public function test_sync_from_sheet_requires_from_sheet_row(): void
+    public function test_sync_from_sheet_works_with_bidirectional_syncable(): void
     {
-        $model = new class extends FakeProduct
-        {
-            public function fromSheetRow(array $row): array
-            {
-                return [];
-            }
-        };
-
         $this->googleClient->shouldReceive('readSheet')->andReturn([
             ['Name', 'Price', 'SKU', 'DB_ID'],
         ]);
 
         $manager = $this->app->make(SyncManager::class);
-        $state = $manager->syncFromSheet(get_class($model));
+        $state = $manager->syncFromSheet(FakeProduct::class);
 
         $this->assertEquals('from_sheet', $state->sync_direction);
         $this->assertEquals('completed', $state->status);
+    }
+
+    public function test_sync_from_sheet_rejects_non_bidirectional(): void
+    {
+        $manager = $this->app->make(SyncManager::class);
+
+        $this->expectException(SyncException::class);
+        $this->expectExceptionMessage('must implement BidirectionalSyncable');
+
+        $manager->syncFromSheet(OneWayProduct::class);
     }
 
     protected function tearDown(): void

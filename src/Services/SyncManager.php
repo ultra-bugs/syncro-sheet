@@ -19,6 +19,7 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Contracts\BidirectionalSyncable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\SyncException;
 use Zuko\SyncroSheet\Models\SyncState;
@@ -111,13 +112,8 @@ class SyncManager
         $this->validateModel($modelClass);
         $model = new $modelClass;
 
-        if (! method_exists($model, 'fromSheetRow')) {
-            throw new SyncException("{$modelClass} must implement fromSheetRow() for from_sheet sync");
-        }
-
-        $idColumn = $this->getSheetReader()->getIdColumnName($model);
-        if (! $idColumn) {
-            throw new SyncException("{$modelClass} must implement getIdColumnOnSheet() for from_sheet sync");
+        if (! $model instanceof BidirectionalSyncable) {
+            throw new SyncException("{$modelClass} must implement BidirectionalSyncable for from_sheet sync");
         }
 
         $syncState = $this->stateManager->initializeSync($modelClass, 'full', 'append', 'from_sheet');
@@ -143,17 +139,15 @@ class SyncManager
         $this->validateModel($modelClass);
         $model = new $modelClass;
 
-        if (! method_exists($model, 'getIdColumnOnSheet')) {
-            throw new SyncException("{$modelClass} must implement getIdColumnOnSheet() for bidirectional sync");
+        if (! $model instanceof BidirectionalSyncable) {
+            throw new SyncException("{$modelClass} must implement BidirectionalSyncable for bidirectional sync");
         }
 
         $toSheetState = $this->fullSync($modelClass, array_merge($options, [
             'sync_direction' => 'bidirectional',
         ]));
 
-        if (method_exists($model, 'fromSheetRow')) {
-            $this->syncFromSheet($modelClass, $options);
-        }
+        $this->syncFromSheet($modelClass, $options);
 
         return $toSheetState;
     }
@@ -221,14 +215,11 @@ class SyncManager
     private function writeBackIds(string $modelClass, SyncState $syncState): void
     {
         $model = new $modelClass;
-        if (! method_exists($model, 'getIdColumnOnSheet')) {
+        if (! $model instanceof BidirectionalSyncable) {
             return;
         }
 
         $idColumn = $model->getIdColumnOnSheet();
-        if (! $idColumn) {
-            return;
-        }
 
         $this->logger->info("Writing back IDs to sheet column [{$idColumn}] for {$modelClass}");
 

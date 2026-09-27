@@ -15,7 +15,9 @@
 
 ```
 src/
-├── Contracts/SheetSyncable.php      # Interface for syncable models
+├── Contracts/
+│   ├── SheetSyncable.php            # Base interface (DB → Sheet)
+│   └── BidirectionalSyncable.php    # Extended interface (DB ↔ Sheet)
 ├── Console/Commands/SheetSyncCommand.php
 ├── Exceptions/
 ├── Events/SyncEvent.php
@@ -55,10 +57,22 @@ interface SheetSyncable
 }
 ```
 
-**Optional methods** (checked via `method_exists`):
-- `getIdColumnOnSheet(): ?string` — Column header for storing DB record IDs
-- `fromSheetRow(array $row): array` — Reverse transform: sheet row → model attributes
-- `getSyncDirection(): string` — `'to_sheet'`, `'from_sheet'`, `'bidirectional'`
+## BidirectionalSyncable Contract
+
+For 2-way sync, models implement `BidirectionalSyncable extends SheetSyncable`:
+
+```php
+interface BidirectionalSyncable extends SheetSyncable
+{
+    public function getIdColumnOnSheet(): string;   // Sheet column header storing DB PK
+    public function fromSheetRow(array $row): array; // Sheet row → model attributes
+    public function getSyncDirection(): string;      // 'to_sheet' | 'from_sheet' | 'bidirectional'
+}
+```
+
+The system uses `instanceof BidirectionalSyncable` checks (not `method_exists`).
+
+**Optional methods on SheetSyncable** (checked via `method_exists`):
 - `defaultSheetHeaders(): array` — Custom header row
 - `getBatchSize(): ?int` — Custom batch size
 - `getPreferredSyncMode(): ?string` — `'append'` or `'replace'`

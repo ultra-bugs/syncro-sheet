@@ -3,9 +3,9 @@
 namespace Zuko\SyncroSheet\Tests\Fixtures;
 
 use Illuminate\Database\Eloquent\Model;
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\BidirectionalSyncable;
 
-class FakeProduct extends Model implements SheetSyncable
+class FakeProduct extends Model implements BidirectionalSyncable
 {
     protected $table = 'fake_products';
 
@@ -30,7 +30,7 @@ class FakeProduct extends Model implements SheetSyncable
         ];
     }
 
-    public function getIdColumnOnSheet(): ?string
+    public function getIdColumnOnSheet(): string
     {
         return 'DB_ID';
     }

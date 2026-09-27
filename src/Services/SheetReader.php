@@ -2,7 +2,7 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Contracts\BidirectionalSyncable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\SyncException;
 
@@ -81,12 +81,9 @@ class SheetReader
         ];
     }
 
-    /**
-     * Get the id column name from the model
-     */
     public function getIdColumnName(SheetSyncable $model): ?string
     {
-        if (method_exists($model, 'getIdColumnOnSheet')) {
+        if ($model instanceof BidirectionalSyncable) {
             return $model->getIdColumnOnSheet();
         }
 
