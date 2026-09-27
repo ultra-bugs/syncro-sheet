@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -25,7 +26,7 @@ use Zuko\SyncroSheet\Services\SyncManager;
  * @method static \Zuko\SyncroSheet\Models\SyncState partialSync(string $modelClass, array $recordIds)
  * @method static \Zuko\SyncroSheet\Models\SyncState|null getLastSync(string $modelClass)
  *
- * @see \Zuko\SyncroSheet\Services\SyncManager
+ * @see SyncManager
  */
 class SyncroSheet extends Facade
 {

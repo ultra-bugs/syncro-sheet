@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -19,6 +20,7 @@ namespace Zuko\SyncroSheet;
 
 use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\ServiceProvider;
+use Zuko\SyncroSheet\Facades\SyncroSheet;
 use Zuko\SyncroSheet\Services\BatchProcessor;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\RecordMatcher;
@@ -65,6 +67,6 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->app->singleton(RecordMatcher::class);
         // Register facade
         $loader = AliasLoader::getInstance();
-        $loader->alias('SyncroSheet', \Zuko\SyncroSheet\Facades\SyncroSheet::class);
+        $loader->alias('SyncroSheet', SyncroSheet::class);
     }
 }

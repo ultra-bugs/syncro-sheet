@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -17,6 +18,8 @@
 
 namespace Zuko\SyncroSheet\Services;
 
+use Carbon\Carbon;
+use Doctrine\DBAL\Schema\Index;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -152,7 +155,7 @@ class FuzzyRecordIdentifier
     /**
      * Score an index based on its characteristics
      */
-    private function getIndexScore(\Doctrine\DBAL\Schema\Index $index): float
+    private function getIndexScore(Index $index): float
     {
         if ($index->isPrimary()) {
             return 1.0;
@@ -200,7 +203,7 @@ class FuzzyRecordIdentifier
         }
 
         // Timestamp/Date handling
-        if ($value instanceof \DateTime || $value instanceof \Carbon\Carbon) {
+        if ($value instanceof \DateTime || $value instanceof Carbon) {
             if ($this->isLikelyCreationDate($value)) {
                 return 0.8;
             }

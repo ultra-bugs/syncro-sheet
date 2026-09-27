@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -36,7 +37,7 @@ class SheetSyncCommand extends Command
         $modelClass = $this->argument('model');
 
         if (! str_contains($modelClass, '\\')) {
-            $modelClass = 'App\\Models\\' . $modelClass;
+            $modelClass = 'App\\Models\\'.$modelClass;
         }
 
         $ids = $this->option('ids');
@@ -64,7 +65,7 @@ class SheetSyncCommand extends Command
                 $syncState = $syncManager->fullSync($modelClass, $options);
             } else {
                 $ids = is_array($ids) ? $ids : explode(',', $ids[0]);
-                $this->info("Starting partial sync for {$modelClass} with IDs: " . implode(', ', $ids));
+                $this->info("Starting partial sync for {$modelClass} with IDs: ".implode(', ', $ids));
                 $syncState = $syncManager->partialSync($modelClass, $ids, $options);
             }
 

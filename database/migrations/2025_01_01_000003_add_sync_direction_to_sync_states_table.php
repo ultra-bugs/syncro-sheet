@@ -19,6 +19,10 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('sync_states', static function (Blueprint $table) {
+            $table->dropIndex('sync_states_sync_direction_index');
+        });
+
+        Schema::table('sync_states', static function (Blueprint $table) {
             $table->dropColumn('sync_direction');
         });
     }

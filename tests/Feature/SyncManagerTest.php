@@ -25,7 +25,7 @@ class SyncManagerTest extends TestCase
     protected function defineDatabaseMigrations(): void
     {
         parent::defineDatabaseMigrations();
-        $this->loadMigrationsFrom(__DIR__ . '/../Fixtures');
+        $this->loadMigrationsFrom(__DIR__.'/../Fixtures');
     }
 
     public function test_full_sync_creates_sync_state(): void

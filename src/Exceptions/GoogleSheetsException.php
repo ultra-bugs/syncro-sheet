@@ -2,6 +2,4 @@
 
 namespace Zuko\SyncroSheet\Exceptions;
 
-class GoogleSheetsException extends \RuntimeException
-{
-}
+class GoogleSheetsException extends \RuntimeException {}

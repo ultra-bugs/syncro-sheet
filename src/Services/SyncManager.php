@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -38,8 +39,7 @@ class SyncManager
         private readonly SyncLogger $logger,
         private readonly NotificationManager $notificationManager,
         private readonly ErrorHandler $errorHandler
-    ) {
-    }
+    ) {}
 
     protected function getSheetReader(): SheetReader
     {
@@ -274,7 +274,7 @@ class SyncManager
         if (! empty($updates)) {
             $googleClient = app(GoogleClient::class);
             foreach ($updates as $rowNum => $cellUpdates) {
-                $range = $this->columnLetterFromIndex($idColumnIndex) . $rowNum;
+                $range = $this->columnLetterFromIndex($idColumnIndex).$rowNum;
                 $googleClient->updateCell(
                     $model->getSheetIdentifier(),
                     $model->getSheetName(),
@@ -303,7 +303,7 @@ class SyncManager
                 break;
             }
 
-            $range = $this->columnLetterFromIndex($idColumnIndex) . $rowNum;
+            $range = $this->columnLetterFromIndex($idColumnIndex).$rowNum;
             $googleClient->updateCell(
                 $model->getSheetIdentifier(),
                 $model->getSheetName(),
@@ -345,7 +345,7 @@ class SyncManager
         $letter = '';
         $num = $index;
         while ($num >= 0) {
-            $letter = chr(($num % 26) + 65) . $letter;
+            $letter = chr(($num % 26) + 65).$letter;
             $num = intdiv($num, 26) - 1;
         }
 
@@ -358,9 +358,7 @@ class SyncManager
             throw new SyncException("Model class {$modelClass} does not exist");
         }
 
-        $model = new $modelClass;
-
-        if (! $model instanceof Model || ! $model instanceof SheetSyncable) {
+        if (! is_subclass_of($modelClass, SheetSyncable::class)) {
             throw new SyncException("Model class {$modelClass} must implement SheetSyncable interface");
         }
     }

@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -17,15 +18,12 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 
 class DataTransformer
 {
-    /**
-     * Transform a batch of records into sheet rows
-     */
     public function transformBatch(Collection $records): array
     {
         if ($records->isEmpty()) {

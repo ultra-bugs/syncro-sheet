@@ -19,7 +19,7 @@ class DataTransformerTest extends TestCase
     protected function defineDatabaseMigrations(): void
     {
         parent::defineDatabaseMigrations();
-        $this->loadMigrationsFrom(__DIR__ . '/../Fixtures');
+        $this->loadMigrationsFrom(__DIR__.'/../Fixtures');
     }
 
     public function test_transform_batch_converts_models_to_rows(): void

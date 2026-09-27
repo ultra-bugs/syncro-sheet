@@ -2,6 +2,4 @@
 
 namespace Zuko\SyncroSheet\Exceptions;
 
-class SyncException extends \RuntimeException
-{
-}
+class SyncException extends \RuntimeException {}

@@ -22,7 +22,7 @@ class RecordMatcherTest extends TestCase
     protected function defineDatabaseMigrations(): void
     {
         parent::defineDatabaseMigrations();
-        $this->loadMigrationsFrom(__DIR__ . '/../Fixtures');
+        $this->loadMigrationsFrom(__DIR__.'/../Fixtures');
     }
 
     public function test_match_by_ids_finds_existing_records(): void

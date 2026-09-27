@@ -9,8 +9,7 @@ class RecordMatcher
 {
     public function __construct(
         private readonly SyncLogger $logger
-    ) {
-    }
+    ) {}
 
     /**
      * Match sheet rows to existing DB records by their IDs

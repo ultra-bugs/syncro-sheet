@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -26,8 +27,7 @@ abstract class BaseNotification extends Notification
 {
     public function __construct(
         protected SyncState $syncState
-    ) {
-    }
+    ) {}
 
     public function via($notifiable): array
     {

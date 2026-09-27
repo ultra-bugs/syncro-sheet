@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -24,8 +25,7 @@ class StateManager
 {
     public function __construct(
         private readonly SyncLogger $logger
-    ) {
-    }
+    ) {}
 
     /**
      * Initialize a new sync state

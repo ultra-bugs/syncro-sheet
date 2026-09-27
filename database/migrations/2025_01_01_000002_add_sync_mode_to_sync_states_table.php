@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -18,14 +19,15 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Zuko\SyncroSheet\Services\SyncManager;
 
 return new class extends Migration
 {
     public function up()
     {
         Schema::table('sync_states', static function (Blueprint $table) {
-            $table->enum('sync_mode', \Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES)
-                ->default(\Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES[0])
+            $table->enum('sync_mode', SyncManager::AVAILABLE_SYNC_MODES)
+                ->default(SyncManager::AVAILABLE_SYNC_MODES[0])
                 ->after('sync_type')
                 ->index();
         });
@@ -33,6 +35,10 @@ return new class extends Migration
 
     public function down()
     {
+        Schema::table('sync_states', static function (Blueprint $table) {
+            $table->dropIndex('sync_states_sync_mode_index');
+        });
+
         Schema::table('sync_states', static function (Blueprint $table) {
             $table->dropColumn('sync_mode');
         });

@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -31,8 +32,7 @@ class GoogleClient
     public function __construct(
         private readonly TokenManager $tokenManager,
         private readonly SyncLogger $logger
-    ) {
-    }
+    ) {}
 
     /**
      * Get or initialize the Sheets client

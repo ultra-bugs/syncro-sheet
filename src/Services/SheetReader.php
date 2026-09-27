@@ -11,8 +11,7 @@ class SheetReader
     public function __construct(
         private readonly GoogleClient $googleClient,
         private readonly SyncLogger $logger
-    ) {
-    }
+    ) {}
 
     /**
      * Read sheet data and return parsed rows with headers

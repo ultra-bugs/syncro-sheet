@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -28,8 +29,7 @@ class BatchProcessor
         private readonly DataTransformer $transformer,
         private readonly GoogleClient $googleClient,
         private readonly SyncLogger $logger
-    ) {
-    }
+    ) {}
 
     /**
      * Process full sync in batches
@@ -60,9 +60,13 @@ class BatchProcessor
             $rows = $this->transformer->transformBatch($records);
 
             if (! empty($rows)) {
-                // Transform to associative arrays with headers
                 $rowsWithHeaders = collect($rows)->map(function ($row) use ($headers) {
-                    return array_combine($headers, $row);
+                    $mapped = [];
+                    foreach ($headers as $header) {
+                        $mapped[$header] = $row[$header] ?? '';
+                    }
+
+                    return $mapped;
                 })->toArray();
                 $this->googleClient->appendWithHeaders(
                     $model->getSheetIdentifier(),

@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -31,8 +32,7 @@ class PartialSyncJob implements ShouldQueue
     public function __construct(
         private readonly string $modelClass,
         private readonly array $recordIds
-    ) {
-    }
+    ) {}
 
     public function handle(SyncManager $syncManager): void
     {

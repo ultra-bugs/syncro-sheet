@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -31,7 +32,7 @@ class SheetRowMapper
 
     public function __construct(?FuzzyRecordIdentifier $fuzzyIdentifier = null)
     {
-        $this->fuzzyIdentifier = $fuzzyIdentifier ?? new FuzzyRecordIdentifier();
+        $this->fuzzyIdentifier = $fuzzyIdentifier ?? new FuzzyRecordIdentifier;
     }
 
     /**

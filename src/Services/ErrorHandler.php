@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -18,6 +19,8 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use Zuko\SyncroSheet\Jobs\PartialSyncJob;
 use Zuko\SyncroSheet\Models\SyncState;
 
 class ErrorHandler
@@ -26,8 +29,7 @@ class ErrorHandler
         private readonly NotificationManager $notificationManager,
         private readonly SyncLogger $logger,
         private readonly int $maxRetries = 3
-    ) {
-    }
+    ) {}
 
     /**
      * Handle sync error
@@ -83,9 +85,9 @@ class ErrorHandler
         // Use Laravel's scheduler to retry after exponential backoff
         $delay = pow(2, $retryCount - 1) * 60; // 1min, 2min, 4min...
 
-        \Illuminate\Support\Facades\Queue::later(
+        Queue::later(
             now()->addSeconds($delay),
-            new \Zuko\SyncroSheet\Jobs\PartialSyncJob($modelClass, $recordIds)
+            new PartialSyncJob($modelClass, $recordIds)
         );
     }
 }

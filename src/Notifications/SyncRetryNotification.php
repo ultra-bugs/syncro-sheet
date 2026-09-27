@@ -1,4 +1,5 @@
 <?php
+
 /*
  *          M""""""""`M            dP
  *          Mmmmmm   .M            88
@@ -19,6 +20,7 @@ namespace Zuko\SyncroSheet\Notifications;
 
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Messages\SlackMessage;
+use Zuko\SyncroSheet\Models\SyncState;
 
 class SyncRetryNotification extends BaseNotification
 {
