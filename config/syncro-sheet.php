@@ -24,6 +24,7 @@ return [
     'defaults' => [
         'batch_size' => 100,
         'sync_mode' => 'append',
+        'sync_direction' => 'to_sheet', // to_sheet, from_sheet, bidirectional
         'timeout' => 600,
         'retries' => 3,
     ],

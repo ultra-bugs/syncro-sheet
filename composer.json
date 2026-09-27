@@ -22,8 +22,15 @@
     "revolution/laravel-google-sheets" : ">=6.0"
   },
   "require-dev"       : {
+    "orchestra/testbench"           : "^9.0 || ^10.0",
+    "phpunit/phpunit"               : "^11.0",
+    "mockery/mockery"               : "^1.6",
     "roave/security-advisories"     : "dev-latest",
-    "laravel/pint" : ">=1.17.0"
+    "laravel/pint"                  : ">=1.17.0"
+  },
+  "scripts": {
+    "test": "vendor/bin/phpunit",
+    "lint": "vendor/bin/pint"
   },
   "autoload"          : {
     "psr-4" : {

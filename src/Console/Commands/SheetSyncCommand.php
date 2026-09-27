@@ -22,10 +22,11 @@ use Zuko\SyncroSheet\Services\SyncManager;
 
 class SheetSyncCommand extends Command
 {
-    protected $signature = 'sheet:sync 
+    protected $signature = 'sheet:sync
                           {model : The model class to sync}
                           {--ids=* : Specific record IDs for partial sync}
                           {--M|mode= : Sync mode (append/replace)}
+                          {--D|direction=to_sheet : Sync direction (to_sheet/from_sheet/bidirectional)}
                           {--F|force : using replace mode}';
 
     protected $description = 'Sync model data with Google Sheets';
@@ -34,24 +35,37 @@ class SheetSyncCommand extends Command
     {
         $modelClass = $this->argument('model');
 
-        // Add namespace if not provided
         if (! str_contains($modelClass, '\\')) {
-            $modelClass = 'App\\Models\\'.$modelClass;
+            $modelClass = 'App\\Models\\' . $modelClass;
         }
 
         $ids = $this->option('ids');
         $mode = $this->option('mode');
+        $direction = $this->option('direction');
+
         if (! $mode && $this->option('force')) {
             $mode = 'replace';
         }
+
+        $options = array_filter([
+            'sync_mode' => $mode,
+            'sync_direction' => $direction,
+        ]);
+
         try {
-            if (empty($ids)) {
+            if ($direction === 'from_sheet') {
+                $this->info("Starting from-sheet sync for {$modelClass}");
+                $syncState = $syncManager->syncFromSheet($modelClass, $options);
+            } elseif ($direction === 'bidirectional') {
+                $this->info("Starting bidirectional sync for {$modelClass}");
+                $syncState = $syncManager->bidirectionalSync($modelClass, $options);
+            } elseif (empty($ids)) {
                 $this->info("Starting full sync for {$modelClass}");
-                $syncState = $syncManager->fullSync($modelClass, ['sync_mode' => $mode]);
+                $syncState = $syncManager->fullSync($modelClass, $options);
             } else {
                 $ids = is_array($ids) ? $ids : explode(',', $ids[0]);
-                $this->info("Starting partial sync for {$modelClass} with IDs: ".implode(', ', $ids));
-                $syncState = $syncManager->partialSync($modelClass, $ids, ['sync_mode' => $mode]);
+                $this->info("Starting partial sync for {$modelClass} with IDs: " . implode(', ', $ids));
+                $syncState = $syncManager->partialSync($modelClass, $ids, $options);
             }
 
             $this->info("Sync completed! Processed {$syncState->total_processed} records.");

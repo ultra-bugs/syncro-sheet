@@ -280,6 +280,29 @@ class GoogleClient
     }
 
     /**
+     * Update a single cell value
+     */
+    public function updateCell(string $spreadsheetId, string $sheetName, string $cellRange, mixed $value): void
+    {
+        $this->checkRateLimit();
+
+        try {
+            $this->getClient()
+                ->spreadsheet($spreadsheetId)
+                ->sheet($sheetName)
+                ->range("{$sheetName}!{$cellRange}")
+                ->update([[$value]]);
+
+            $this->updateRateLimit();
+
+            $this->logger->info("Updated cell {$cellRange} in sheet {$sheetName}");
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to update cell: {$e->getMessage()}");
+            throw new GoogleSheetsException("Failed to update cell: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
      * Generate headers from a SheetSyncable model or data
      */
     private function generateHeaders($model = null, array $data = []): array

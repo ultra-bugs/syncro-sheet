@@ -30,12 +30,13 @@ class StateManager
     /**
      * Initialize a new sync state
      */
-    public function initializeSync(string $modelClass, string $syncType, string $syncMode): SyncState
+    public function initializeSync(string $modelClass, string $syncType, string $syncMode, string $syncDirection = 'to_sheet'): SyncState
     {
         return SyncState::create([
             'model_class' => $modelClass,
             'sync_type' => $syncType,
             'sync_mode' => $syncMode,
+            'sync_direction' => $syncDirection,
             'status' => 'running',
             'started_at' => now(),
         ]);
@@ -94,6 +95,33 @@ class StateManager
         ]);
 
         $this->logger->error("Sync failed for {$syncState->model_class}: {$error}");
+    }
+
+    /**
+     * Record batch sync with sheet row number tracking
+     */
+    public function recordBatchSyncWithRowNumber(SyncState $syncState, array $recordIds, int $sheetRowNumber): void
+    {
+        $entries = array_map(function ($recordId) use ($syncState, $sheetRowNumber) {
+            return [
+                'sync_state_id' => $syncState->id,
+                'model_class' => $syncState->model_class,
+                'record_id' => $recordId,
+                'sheet_row_number' => $sheetRowNumber,
+                'synced_at' => now(),
+                'sync_type' => $syncState->sync_type,
+                'status' => 'success',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+        }, $recordIds);
+
+        DB::table('sync_entries')->insert($entries);
+
+        $syncState->update([
+            'total_processed' => $syncState->total_processed + count($recordIds),
+            'last_processed_id' => max($recordIds),
+        ]);
     }
 
     /**

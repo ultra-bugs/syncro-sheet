@@ -25,6 +25,7 @@ class SyncEntry extends Model
     protected $fillable = [
         'model_class',
         'record_id',
+        'sheet_row_number',
         'synced_at',
         'sync_state_id',
         'sync_type',

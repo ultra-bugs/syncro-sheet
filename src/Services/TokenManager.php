@@ -27,6 +27,18 @@ class TokenManager
     private const TOKEN_BUFFER = 300; // 5 minutes buffer before expiration
 
     /**
+     * Get the current access token, refreshing if needed
+     */
+    public function getToken(): ?array
+    {
+        $this->refreshIfNeeded();
+
+        $tokenData = Cache::get(self::CACHE_KEY);
+
+        return $tokenData['access_token'] ?? null;
+    }
+
+    /**
      * Check and refresh token if needed
      */
     public function refreshIfNeeded(): void
