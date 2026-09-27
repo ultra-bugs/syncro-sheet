@@ -27,6 +27,7 @@ class SyncEntry extends Model
         'model_class',
         'record_id',
         'sheet_row_number',
+        'content_hash',
         'synced_at',
         'sync_state_id',
         'sync_type',

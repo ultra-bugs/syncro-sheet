@@ -28,6 +28,7 @@ class SheetSyncCommand extends Command
                           {--ids=* : Specific record IDs for partial sync}
                           {--M|mode= : Sync mode (append/replace)}
                           {--D|direction=to_sheet : Sync direction (to_sheet/from_sheet/bidirectional)}
+                          {--incremental : Only sync records that changed since last sync}
                           {--F|force : using replace mode}';
 
     protected $description = 'Sync model data with Google Sheets';
@@ -54,7 +55,10 @@ class SheetSyncCommand extends Command
         ]);
 
         try {
-            if ($direction === 'from_sheet') {
+            if ($this->option('incremental')) {
+                $this->info("Starting incremental sync for {$modelClass}");
+                $syncState = $syncManager->incrementalSync($modelClass, $options);
+            } elseif ($direction === 'from_sheet') {
                 $this->info("Starting from-sheet sync for {$modelClass}");
                 $syncState = $syncManager->syncFromSheet($modelClass, $options);
             } elseif ($direction === 'bidirectional') {

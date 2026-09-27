@@ -34,6 +34,8 @@ class SyncManager
 
     private ?RecordMatcher $recordMatcher = null;
 
+    private ?ContentHasher $contentHasher = null;
+
     public function __construct(
         private readonly BatchProcessor $batchProcessor,
         private readonly StateManager $stateManager,
@@ -50,6 +52,11 @@ class SyncManager
     protected function getRecordMatcher(): RecordMatcher
     {
         return $this->recordMatcher ??= app(RecordMatcher::class);
+    }
+
+    protected function getContentHasher(): ContentHasher
+    {
+        return $this->contentHasher ??= app(ContentHasher::class);
     }
 
     /**
@@ -132,6 +139,42 @@ class SyncManager
     }
 
     /**
+     * Incremental sync: only process records where content hash changed since last sync.
+     * For bidirectional models, also discovers new sheet rows.
+     */
+    public function incrementalSync(string $modelClass, array $options = []): SyncState
+    {
+        $this->validateModel($modelClass);
+        $model = new $modelClass;
+
+        $direction = $options['sync_direction'] ?? 'to_sheet';
+        if ($model instanceof BidirectionalSyncable) {
+            $direction = $options['sync_direction'] ?? $model->getSyncDirection();
+        }
+
+        $syncState = $this->stateManager->initializeSync($modelClass, 'incremental', 'append', $direction);
+        $this->notificationManager->notifyStart($syncState);
+
+        try {
+            $result = $this->processIncrementalToSheet($model, $modelClass, $syncState);
+
+            if ($model instanceof BidirectionalSyncable && in_array($direction, ['from_sheet', 'bidirectional'])) {
+                $sheetResult = $this->processFromSheet($model, $modelClass, $syncState);
+                $result['total_processed'] += $sheetResult['total_processed'];
+                $result['last_processed_id'] = $sheetResult['last_processed_id'] ?? $result['last_processed_id'];
+            }
+
+            $this->stateManager->completeSync($syncState, $result);
+            $this->notificationManager->notifyCompletion($syncState);
+
+            return $syncState;
+        } catch (\Exception $e) {
+            $this->handleSyncError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
      * Bidirectional sync: push DB→Sheet then pull Sheet→DB for new/changed rows
      */
     public function bidirectionalSync(string $modelClass, array $options = []): SyncState
@@ -152,6 +195,78 @@ class SyncManager
         return $toSheetState;
     }
 
+    private function processIncrementalToSheet(SheetSyncable $model, string $modelClass, SyncState $syncState): array
+    {
+        $hasher = $this->getContentHasher();
+        $keyName = $model->getKeyName();
+        $batchSize = method_exists($model, 'getBatchSize')
+            ? ($model->getBatchSize() ?? 100)
+            : config('syncro-sheet.defaults.batch_size', 100);
+
+        $totalProcessed = 0;
+        $lastProcessedId = null;
+        $changedRecords = collect();
+
+        $modelClass::query()->orderBy($keyName)->chunk($batchSize, function ($records) use ($hasher, $modelClass, $keyName, &$changedRecords) {
+            $recordIds = $records->pluck($keyName)->toArray();
+            $storedHashes = $hasher->getStoredHashes($modelClass, $recordIds);
+
+            foreach ($records as $record) {
+                $currentHash = $hasher->hash($record->toSheetRow());
+                $storedHash = $storedHashes[$record->getKey()] ?? null;
+
+                if ($hasher->hasChanged($currentHash, $storedHash)) {
+                    $changedRecords->push([
+                        'record' => $record,
+                        'hash' => $currentHash,
+                    ]);
+                }
+            }
+        });
+
+        if ($changedRecords->isEmpty()) {
+            $this->logger->info("No changes detected for {$modelClass}");
+
+            return ['total_processed' => 0, 'last_processed_id' => null];
+        }
+
+        $this->logger->info(sprintf('Detected %d changed records for %s', $changedRecords->count(), $modelClass));
+
+        $changedRecords->chunk($batchSize)->each(function ($batch) use ($model, $syncState, &$totalProcessed, &$lastProcessedId) {
+            $records = $batch->pluck('record');
+            $rows = app(DataTransformer::class)->transformBatch($records);
+
+            if (! empty($rows)) {
+                $googleClient = app(GoogleClient::class);
+                $googleClient->writeBatch(
+                    $model->getSheetIdentifier(),
+                    $model->getSheetName(),
+                    $rows
+                );
+            }
+
+            $processedIds = $records->pluck($model->getKeyName())->toArray();
+            $contentHashes = [];
+            foreach ($batch as $item) {
+                $contentHashes[$item['record']->getKey()] = $item['hash'];
+            }
+
+            $this->stateManager->recordBatchSync($syncState, $processedIds, $contentHashes);
+
+            $totalProcessed += count($processedIds);
+            $lastProcessedId = $records->last()->{$model->getKeyName()};
+        });
+
+        if ($model instanceof BidirectionalSyncable) {
+            $this->writeBackIds($modelClass, $syncState);
+        }
+
+        return [
+            'total_processed' => $totalProcessed,
+            'last_processed_id' => $lastProcessedId,
+        ];
+    }
+
     private function processFromSheet(SheetSyncable $model, string $modelClass, SyncState $syncState): array
     {
         $partitioned = $this->getSheetReader()->partitionByIdColumn($model);
@@ -168,7 +283,8 @@ class SyncManager
             foreach ($changed as $sheetRowNum => $changeData) {
                 $changeData['db_record']->update($changeData['new_attributes']);
 
-                $this->stateManager->recordBatchSync($syncState, [$changeData['db_id']]);
+                $contentHash = $this->getContentHasher()->hash($changeData['db_record']->toSheetRow());
+                $this->stateManager->recordBatchSync($syncState, [$changeData['db_id']], [$changeData['db_id'] => $contentHash]);
                 $totalProcessed++;
                 $lastProcessedId = $changeData['db_id'];
             }
@@ -190,10 +306,12 @@ class SyncManager
                 $totalProcessed++;
                 $lastProcessedId = $record->getKey();
 
+                $contentHash = $this->getContentHasher()->hash($record->toSheetRow());
                 $this->stateManager->recordBatchSyncWithRowNumber(
                     $syncState,
                     [$record->getKey()],
-                    $sheetRowNum
+                    $sheetRowNum,
+                    $contentHash
                 );
             }
 

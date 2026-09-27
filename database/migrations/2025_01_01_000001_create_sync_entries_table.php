@@ -30,7 +30,7 @@ return new class extends Migration
             $table->string('model_class');
             $table->bigInteger('record_id');
             $table->timestamp('synced_at');
-            $table->enum('sync_type', ['full', 'partial']);
+            $table->enum('sync_type', ['full', 'partial', 'incremental']);
             $table->enum('status', ['success', 'failed']);
             $table->text('error_message')->nullable();
             $table->timestamps();

@@ -85,6 +85,16 @@ The system uses `instanceof BidirectionalSyncable` checks (not `method_exists`).
 | `to_sheet` | `sheet:sync Model` | DB → Sheet (default) |
 | `from_sheet` | `sheet:sync Model --direction=from_sheet` | Sheet → DB |
 | `bidirectional` | `sheet:sync Model --direction=bidirectional` | Both directions |
+| `incremental` | `sheet:sync Model --incremental` | Hash-based change detection, only sync changed rows |
+
+## Change Detection (ContentHasher)
+
+`ContentHasher` computes `md5` of normalized `toSheetRow()` output, stored in `sync_entries.content_hash`.
+
+- `incrementalSync()`: compares current hash vs stored hash → only syncs changed/new records
+- `fullSync()` and `processFromSheet()` also store hashes for future incremental runs
+- Normalization: trims strings, casts numerics to float-string, null → empty string
+- For bidirectional incremental: also discovers new sheet rows (no idCol value)
 
 ## Development
 

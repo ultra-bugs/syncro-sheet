@@ -44,14 +44,17 @@ class StateManager
 
     /**
      * Record successful sync for a batch of records
+     *
+     * @param  array<string, string>  $contentHashes  Optional map of recordId => contentHash
      */
-    public function recordBatchSync(SyncState $syncState, array $recordIds): void
+    public function recordBatchSync(SyncState $syncState, array $recordIds, array $contentHashes = []): void
     {
-        $entries = array_map(function ($recordId) use ($syncState) {
+        $entries = array_map(function ($recordId) use ($syncState, $contentHashes) {
             return [
                 'sync_state_id' => $syncState->id,
                 'model_class' => $syncState->model_class,
                 'record_id' => $recordId,
+                'content_hash' => $contentHashes[$recordId] ?? null,
                 'synced_at' => now(),
                 'sync_type' => $syncState->sync_type,
                 'status' => 'success',
@@ -100,14 +103,15 @@ class StateManager
     /**
      * Record batch sync with sheet row number tracking
      */
-    public function recordBatchSyncWithRowNumber(SyncState $syncState, array $recordIds, int $sheetRowNumber): void
+    public function recordBatchSyncWithRowNumber(SyncState $syncState, array $recordIds, int $sheetRowNumber, ?string $contentHash = null): void
     {
-        $entries = array_map(function ($recordId) use ($syncState, $sheetRowNumber) {
+        $entries = array_map(function ($recordId) use ($syncState, $sheetRowNumber, $contentHash) {
             return [
                 'sync_state_id' => $syncState->id,
                 'model_class' => $syncState->model_class,
                 'record_id' => $recordId,
                 'sheet_row_number' => $sheetRowNumber,
+                'content_hash' => $contentHash,
                 'synced_at' => now(),
                 'sync_type' => $syncState->sync_type,
                 'status' => 'success',

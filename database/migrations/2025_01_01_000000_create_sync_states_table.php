@@ -27,7 +27,7 @@ return new class extends Migration
         Schema::create('sync_states', static function (Blueprint $table) {
             $table->id();
             $table->string('model_class');
-            $table->enum('sync_type', ['full', 'partial']);
+            $table->enum('sync_type', ['full', 'partial', 'incremental']);
             $table->enum('status', ['pending', 'running', 'completed', 'failed']);
             $table->timestamp('started_at')->nullable();
             $table->timestamp('completed_at')->nullable();

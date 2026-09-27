@@ -24,12 +24,19 @@ use Zuko\SyncroSheet\Models\SyncState;
 
 class BatchProcessor
 {
+    private ?ContentHasher $contentHasher = null;
+
     public function __construct(
         private readonly StateManager $stateManager,
         private readonly DataTransformer $transformer,
         private readonly GoogleClient $googleClient,
         private readonly SyncLogger $logger
     ) {}
+
+    protected function getContentHasher(): ContentHasher
+    {
+        return $this->contentHasher ??= app(ContentHasher::class);
+    }
 
     /**
      * Process full sync in batches
@@ -76,7 +83,12 @@ class BatchProcessor
             }
 
             $processedIds = $records->pluck($model->getKeyName())->toArray();
-            $this->stateManager->recordBatchSync($syncState, $processedIds);
+            $contentHashes = [];
+            $hasher = $this->getContentHasher();
+            foreach ($records as $record) {
+                $contentHashes[$record->getKey()] = $hasher->hash($record->toSheetRow());
+            }
+            $this->stateManager->recordBatchSync($syncState, $processedIds, $contentHashes);
 
             $totalProcessed += count($records);
             $lastProcessedId = $records->last()->{$model->getKeyName()};
