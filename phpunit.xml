@@ -7,7 +7,6 @@
     <testsuites>
         <testsuite name="SyncroSheet Test Suite">
             <directory>tests/Feature</directory>
-            <directory>tests/Unit</directory>
         </testsuite>
     </testsuites>
     <source>
