@@ -54,6 +54,8 @@ class SyncManager
      */
     public function fullSync(string $modelClass, array $options = []): SyncState
     {
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
         $syncMode = $this->determineSyncMode($modelClass, $options);
         $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_EXPORT);
         $this->notificationManager->notifyStart($syncState);
@@ -76,6 +78,7 @@ class SyncManager
     public function partialSync(string $modelClass, array $recordIds, array $options = []): SyncState
     {
         $this->validateModel($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting partial sync for {$modelClass}");
         $syncMode = $this->determineSyncMode($modelClass, $options);
@@ -100,6 +103,7 @@ class SyncManager
     public function importFull(string $modelClass, array $options = []): SyncState
     {
         $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting full import for {$modelClass}");
         $syncMode = $this->determineSyncMode($modelClass, $options);
@@ -126,6 +130,7 @@ class SyncManager
     public function importPartial(string $modelClass, array $recordIds, array $options = []): SyncState
     {
         $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting partial import for {$modelClass}");
         $syncMode = $this->determineSyncMode($modelClass, $options);
@@ -167,6 +172,42 @@ class SyncManager
 
         if (! $model instanceof Model || ! $model instanceof SheetImportable) {
             throw new SyncException("Model class {$modelClass} must implement SheetImportable interface");
+        }
+    }
+
+    /**
+     * Enforce the primary-key contract for bidirectional models.
+     *
+     * A model that is both exportable and importable must round-trip its
+     * primary key through the sheet: the exported row has to carry the key
+     * column so the importer can match rows back to records. Fail fast when a
+     * bidirectional model does not expose its key column.
+     */
+    private function assertBidirectionalPrimaryKey(string $modelClass): void
+    {
+        if (! class_exists($modelClass)) {
+            return; // the direction-specific validators raise the "does not exist" error
+        }
+
+        $model = new $modelClass;
+
+        // Only bidirectional models carry this requirement; single-direction
+        // models are governed by their own validation rules.
+        if (! $model instanceof SheetSyncable || ! $model instanceof SheetImportable) {
+            return;
+        }
+
+        $keyColumn = $model->getSheetKeyColumn();
+
+        $headers = method_exists($model, 'defaultSheetHeaders')
+            ? $model->defaultSheetHeaders()
+            : array_keys($model->toSheetRow());
+
+        if (! in_array($keyColumn, $headers, true)) {
+            throw new SyncException(
+                "Bidirectional sync requires the primary-key column [{$keyColumn}] in the sheet row of "
+                .$modelClass.'; add it to toSheetRow()/defaultSheetHeaders() or adjust getSheetKeyColumn().'
+            );
         }
     }
 

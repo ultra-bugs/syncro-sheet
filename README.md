@@ -206,6 +206,13 @@ $syncState = SyncroSheet::importFull(Product::class);
 $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 ```
 
+> **Primary key is required.** A bidirectional model (one implementing both
+> `SheetSyncable` and `SheetImportable`) must expose its key column in the
+> exported row — the key has to round-trip through the sheet so import can match
+> rows back. If `getSheetKeyColumn()` is absent from `toSheetRow()` /
+> `defaultSheetHeaders()`, both `fullSync()` and `importFull()` throw a
+> `SyncException` up front.
+>
 > **Matching & semantics:** rows are matched to records by the primary-key
 > column (`getSheetKeyColumn()`). Writes are **upsert** — matched rows update,
 > new rows create, nothing is deleted. Set
