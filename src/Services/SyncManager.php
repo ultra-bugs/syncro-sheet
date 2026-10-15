@@ -18,6 +18,7 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Contracts\SheetImportable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\SyncException;
 use Zuko\SyncroSheet\Models\SyncState;
@@ -26,8 +27,21 @@ class SyncManager
 {
     const AVAILABLE_SYNC_MODES = ['append', 'replace'];
 
+    const DIRECTION_EXPORT = 'export';
+
+    const DIRECTION_IMPORT = 'import';
+
+    const DIRECTION_BIDIRECTIONAL = 'bidirectional';
+
+    const AVAILABLE_DIRECTIONS = [
+        self::DIRECTION_EXPORT,
+        self::DIRECTION_IMPORT,
+        self::DIRECTION_BIDIRECTIONAL,
+    ];
+
     public function __construct(
-        private readonly BatchProcessor $batchProcessor,
+        private readonly Exporter $exporter,
+        private readonly Importer $importer,
         private readonly StateManager $stateManager,
         private readonly SyncLogger $logger,
         private readonly NotificationManager $notificationManager,
@@ -41,11 +55,11 @@ class SyncManager
     public function fullSync(string $modelClass, array $options = []): SyncState
     {
         $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_EXPORT);
         $this->notificationManager->notifyStart($syncState);
 
         try {
-            $result = $this->batchProcessor->process($modelClass, $syncState, $syncMode);
+            $result = $this->exporter->export($modelClass, $syncState, $syncMode);
             $this->stateManager->completeSync($syncState, $result);
             $this->notificationManager->notifyCompletion($syncState);
 
@@ -65,13 +79,63 @@ class SyncManager
 
         $this->logger->info("Starting partial sync for {$modelClass}");
         $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode, self::DIRECTION_EXPORT);
 
         try {
-            $result = $this->batchProcessor->processPartial($modelClass, $recordIds, $syncState);
+            $result = $this->exporter->exportPartial($modelClass, $recordIds, $syncState);
             $this->stateManager->completeSync($syncState, $result);
 
             $this->logger->info("Completed partial sync for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->handleSyncError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Import every sheet row back into the model table (Sheet -> DB).
+     */
+    public function importFull(string $modelClass, array $options = []): SyncState
+    {
+        $this->validateImportable($modelClass);
+
+        $this->logger->info("Starting full import for {$modelClass}");
+        $syncMode = $this->determineSyncMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_IMPORT);
+        $this->notificationManager->notifyStart($syncState);
+
+        try {
+            $result = $this->importer->import($modelClass, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+            $this->notificationManager->notifyCompletion($syncState);
+
+            $this->logger->info("Completed full import for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->errorHandler->handleError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Import only the sheet rows whose key matches one of $recordIds.
+     */
+    public function importPartial(string $modelClass, array $recordIds, array $options = []): SyncState
+    {
+        $this->validateImportable($modelClass);
+
+        $this->logger->info("Starting partial import for {$modelClass}");
+        $syncMode = $this->determineSyncMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode, self::DIRECTION_IMPORT);
+
+        try {
+            $result = $this->importer->importPartial($modelClass, $recordIds, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+
+            $this->logger->info("Completed partial import for {$modelClass}");
 
             return $syncState->fresh();
         } catch (\Exception $e) {
@@ -90,6 +154,19 @@ class SyncManager
 
         if (! $model instanceof Model || ! $model instanceof SheetSyncable) {
             throw new SyncException("Model class {$modelClass} must implement SheetSyncable interface");
+        }
+    }
+
+    private function validateImportable(string $modelClass): void
+    {
+        if (! class_exists($modelClass)) {
+            throw new SyncException("Model class {$modelClass} does not exist");
+        }
+
+        $model = new $modelClass;
+
+        if (! $model instanceof Model || ! $model instanceof SheetImportable) {
+            throw new SyncException("Model class {$modelClass} must implement SheetImportable interface");
         }
     }
 

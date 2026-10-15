@@ -15,27 +15,50 @@ Laravel compatible provider: \Zuko\SyncroSheet\LaravelSyncroSheetProvider
 - Handles high-level error management
 - Ensures proper sync state tracking
 
-#### `SheetSyncable` (Interface)
-- Contract for models that can be synced
-- Defines required configuration methods
-- Provides data transformation rules
+#### Sync Contracts (Interfaces)
+- `SheetBound` — shared base: `getSheetIdentifier()`, `getSheetName()`
+- `SheetSyncable extends SheetBound` — export (DB → Sheet): adds `toSheetRow()`
+- `SheetImportable extends SheetBound` — import (Sheet → DB): adds
+  `getSheetKeyColumn()` + `fromSheetRow()`. The `InteractsWithSheet` trait ships
+  sensible defaults for both.
+- A two-way model implements both `SheetSyncable` and `SheetImportable`.
 ```php
-interface SheetSyncable
+interface SheetBound
 {
     public function getSheetIdentifier(): string;    // Google Sheet ID
     public function getSheetName(): string;          // Sheet name
-    public function toSheetRow(): array;             // Data transformation
-    public function getBatchSize(): int;             // Optional, defaults to 1000
+}
+
+interface SheetSyncable extends SheetBound
+{
+    public function toSheetRow(): array;             // DB -> Sheet row
+    // Optional: getBatchSize(): int (defaults to config), defaultSheetHeaders(): array
+}
+
+interface SheetImportable extends SheetBound
+{
+    public function getSheetKeyColumn(): string;     // sheet header mapped to PK
+    public function fromSheetRow(array $row): array; // Sheet row -> model attributes
 }
 ```
 
 ### 2. Data Processing Components
 
-#### `BatchProcessor`
+#### `Exporter` (DB → Sheet)
+- Export engine (formerly `BatchProcessor`)
 - Manages chunked data processing
 - Uses Laravel's lazy loading for memory efficiency
 - Reports progress to state manager
 - Handles chunk-level errors
+- Public API: `export()` (full), `exportPartial()` (specific record IDs)
+
+#### `Importer` (Sheet → DB)
+- Import engine, symmetric counterpart of `Exporter`
+- Reads the sheet via `GoogleClient::readSheet()`, matches rows to records by a
+  primary-key column (`SheetImportable::getSheetKeyColumn()`)
+- Upsert semantics: `updateOrCreate()` per row (default) or `Model::upsert()`
+  batch (opt-in via `syncro-sheet.defaults.import.use_batch_upsert`); never deletes
+- Public API: `import()` (full), `importPartial()` (specific record IDs)
 
 #### `DataTransformer`
 - Converts model data to sheet rows
@@ -60,6 +83,7 @@ class SyncState extends Model
     protected $fillable = [
         'model_class',      // Model class name
         'sync_type',        // 'full' or 'partial'
+        'direction',        // 'export', 'import' or 'bidirectional'
         'sync_mode',        // 'append' or 'replace'
         'status',           // 'running', 'completed', 'failed'
         'started_at',
@@ -145,16 +169,22 @@ return [
 
 ```mermaid
 graph TB
-    A[SyncManager] --> B[BatchProcessor]
+    A[SyncManager] --> B[Exporter]
+    A --> B2[Importer]
     A --> C[StateManager]
-    A --> D[SheetClient]
+    A --> D[GoogleClient]
 
     B --> E[DataTransformer]
+    B2 --> E
+    B --> D
+    B2 --> D
     B --> F[SyncLogger]
+    B2 --> F
 
     D --> G[Google Sheets API]
 
     C --> H[Database]
+    B2 --> H
     F --> I[Log Files]
 
     J[Model] --> A
@@ -164,30 +194,60 @@ graph TB
 
 # Flow:
 
+## Export flow (DB → Sheet)
 
 ```mermaid
 sequenceDiagram
     participant Command as SyncCommand
     participant Manager as SyncManager
-    participant Processor as BatchProcessor
+    participant Processor as Exporter
     participant State as StateManager
     participant Transformer as DataTransformer
-    participant Syncer as GoogleSheetsClient
-    participant Client as GoogleSheetsClient
+    participant Client as GoogleClient
 
-    Command->>Manager: sync(ModelClass)
-    Manager->>State: startSync()
-    Manager->>Processor: process(ModelClass)
+    Command->>Manager: fullSync(ModelClass)
+    Manager->>State: initializeSync(direction=export)
+    Manager->>Processor: export(ModelClass)
 
     loop For each chunk
-        Processor->>Transformer: transform(chunk)
-        Transformer->>Syncer: sync(transformedData)
-        Syncer->>Client: write(sheetId, data)
-        Client-->>Syncer: response
-        Syncer-->>Processor: result
-        Processor->>State: updateProgress()
+        Processor->>Transformer: transformBatch(chunk)
+        Transformer-->>Processor: rows
+        Processor->>Client: appendWithHeaders(sheetId, rows)
+        Client-->>Processor: result
+        Processor->>State: recordBatchSync()
     end
 
     Manager->>State: completeSync()
-    Manager-->>Command: SyncResult
+    Manager-->>Command: SyncState
+```
+
+## Import flow (Sheet → DB)
+
+```mermaid
+sequenceDiagram
+    participant Command as SyncCommand
+    participant Manager as SyncManager
+    participant Processor as Importer
+    participant Client as GoogleClient
+    participant Transformer as DataTransformer
+    participant State as StateManager
+    participant DB as Database
+
+    Command->>Manager: importFull(ModelClass)
+    Manager->>State: initializeSync(direction=import)
+    Manager->>Processor: import(ModelClass)
+    Processor->>Client: readSheet(sheetId)
+    Client-->>Processor: [headers, ...rows]
+
+    loop For each chunk
+        Processor->>Transformer: parseRow(assoc)
+        Transformer-->>Processor: normalized
+        Note over Processor: model.fromSheetRow() -> attributes
+        Processor->>DB: updateOrCreate(key, attributes)
+        DB-->>Processor: record
+        Processor->>State: recordBatchSync()
+    end
+
+    Manager->>State: completeSync()
+    Manager-->>Command: SyncState
 ```

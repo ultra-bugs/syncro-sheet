@@ -8,7 +8,10 @@ Laravel package for efficient synchronization between your models and Google She
 
 ## Features
 
-- 🔄 Sync from Laravel models to Google Sheets. Bidirectional sync is planned to implement
+- 🔄 Bidirectional sync between Laravel models and Google Sheets
+  - **Export** (DB → Sheet) via `SheetSyncable`
+  - **Import** (Sheet → DB) via `SheetImportable`, upsert-by-primary-key (Phase 1)
+  - Full two-way reconcile with conflict resolution is the next phase
 - 📦 Batch processing with memory efficiency
 - 🎯 Support for both full and partial syncs
 - 💾 Sophisticated state tracking and resume capability
@@ -145,12 +148,71 @@ $lastSync = SyncroSheet::getLastSync(Product::class);
 ### 3. Artisan Commands
 
 ```bash
-# Full sync
+# Full export (DB -> Sheet) — default direction
 php artisan sheet:sync Product
 
-# Partial sync
+# Partial export
 php artisan sheet:sync Product --ids=1,2,3
+
+# Full import (Sheet -> DB)
+php artisan sheet:sync Product --direction=import
+
+# Partial import (only these primary keys)
+php artisan sheet:sync Product --direction=import --ids=1,2,3
 ```
+
+### 4. Import (Sheet → DB)
+
+Make your model importable by implementing `SheetImportable`. The
+`InteractsWithSheet` trait provides defaults (`getSheetKeyColumn()` returns the
+model key name, `fromSheetRow()` maps headers straight to attributes), so most
+models only need to declare the interface:
+
+```php
+use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetImportable;
+use Zuko\SyncroSheet\Traits\InteractsWithSheet;
+
+class Product extends Model implements SheetSyncable, SheetImportable
+{
+    use InteractsWithSheet;
+
+    // ...export methods (getSheetIdentifier/getSheetName/toSheetRow)...
+
+    // Override only when the sheet layout differs from the table:
+    public function getSheetKeyColumn(): string
+    {
+        return 'id'; // sheet header holding the primary key
+    }
+
+    public function fromSheetRow(array $row): array
+    {
+        return [
+            'name'  => $row['Product Name'] ?? null,
+            'price' => $row['Price'] ?? null,
+            'stock' => $row['In Stock'] ?? 0,
+        ];
+    }
+}
+```
+
+```php
+use Zuko\SyncroSheet\Facades\SyncroSheet;
+
+// Pull the whole sheet back into the DB (update existing by PK, create new)
+$syncState = SyncroSheet::importFull(Product::class);
+
+// Import only specific primary keys
+$syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
+```
+
+> **Matching & semantics:** rows are matched to records by the primary-key
+> column (`getSheetKeyColumn()`). Writes are **upsert** — matched rows update,
+> new rows create, nothing is deleted. Set
+> `syncro-sheet.defaults.import.use_batch_upsert = true` to use `Model::upsert()`
+> (one query per chunk, skips model events/mutators) for large trusted imports.
+> Models with a non-numeric (UUID/string) primary key are not supported yet
+> (the `sync_entries.record_id` column is a `bigInteger`).
 
 ## Advanced Usage
 

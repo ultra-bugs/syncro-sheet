@@ -50,6 +50,36 @@ class DataTransformer
     }
 
     /**
+     * Normalize a raw associative sheet row (header => string) coming back from
+     * Google Sheets before it is handed to the model's fromSheetRow().
+     *
+     * Google Sheets always yields strings; here we only do format-level clean-up
+     * (trim, empty string -> null). Type coercion is left to the model's
+     * fromSheetRow() and Eloquent casts, which know the target attribute types.
+     *
+     * @param  array<string, mixed>  $row
+     * @return array<string, mixed>
+     */
+    public function parseRow(array $row): array
+    {
+        return array_map(fn ($value) => $this->parseValue($value), $row);
+    }
+
+    /**
+     * Normalize a single value read from a sheet cell.
+     */
+    private function parseValue($value)
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+
+            return $value === '' ? null : $value;
+        }
+
+        return $value;
+    }
+
+    /**
      * Format a value for Google Sheets
      */
     private function formatValue($value): string

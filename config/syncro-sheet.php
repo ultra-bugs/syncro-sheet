@@ -24,8 +24,16 @@ return [
     'defaults' => [
         'batch_size' => 100,
         'sync_mode' => 'append',
+        'direction' => 'export',        // export (DB->Sheet) | import (Sheet->DB) | bidirectional
+        'source_of_truth' => 'db',      // db | sheet — winning side on conflict (bidirectional, Phase 2)
         'timeout' => 600,
         'retries' => 3,
+
+        'import' => [
+            // true  -> Model::upsert() (one query per chunk, skips model events/mutators)
+            // false -> Model::updateOrCreate() per row (fires events, respects casts)
+            'use_batch_upsert' => false,
+        ],
     ],
 
     /*

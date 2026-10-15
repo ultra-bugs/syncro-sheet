@@ -25,6 +25,7 @@ class SyncState extends Model
     protected $fillable = [
         'model_class',
         'sync_type',
+        'direction',
         'sync_mode',
         'status',
         'started_at',

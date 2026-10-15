@@ -17,18 +17,14 @@
 
 namespace Zuko\SyncroSheet\Contracts;
 
-interface SheetSyncable
+/**
+ * Contract for models that can be exported TO a Google Sheet (DB -> Sheet).
+ *
+ * The identifier/name methods live on {@see SheetBound} so the import side
+ * ({@see SheetImportable}) can share them.
+ */
+interface SheetSyncable extends SheetBound
 {
-    /**
-     * Get the Google Sheet ID for this model
-     */
-    public function getSheetIdentifier(): string;
-
-    /**
-     * Get the sheet name within the Google Sheet
-     */
-    public function getSheetName(): string;
-
     /**
      * Transform the model instance to a sheet row
      */

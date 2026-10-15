@@ -21,7 +21,11 @@ use Illuminate\Database\Eloquent\Builder;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Models\SyncState;
 
-class BatchProcessor
+/**
+ * Export engine: pushes Eloquent records TO a Google Sheet (DB -> Sheet) in
+ * memory-efficient chunks. Counterpart of {@see Importer}.
+ */
+class Exporter
 {
     public function __construct(
         private readonly StateManager $stateManager,
@@ -32,9 +36,9 @@ class BatchProcessor
     }
 
     /**
-     * Process full sync in batches
+     * Export a full sync in batches
      */
-    public function process(string $modelClass, SyncState $syncState, ?string $syncMode = null): array
+    public function export(string $modelClass, SyncState $syncState, ?string $syncMode = null): array
     {
         $model = new $modelClass;
         $batchSize = method_exists($model, 'getBatchSize')
@@ -94,9 +98,9 @@ class BatchProcessor
     }
 
     /**
-     * Process partial sync for specific records
+     * Export a partial sync for specific records
      */
-    public function processPartial(string $modelClass, array $recordIds, SyncState $syncState): array
+    public function exportPartial(string $modelClass, array $recordIds, SyncState $syncState): array
     {
         $model = new $modelClass;
         $batchSize = method_exists($model, 'getBatchSize')
