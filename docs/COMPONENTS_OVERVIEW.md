@@ -60,6 +60,22 @@ interface SheetImportable extends SheetBound
   batch (opt-in via `syncro-sheet.defaults.import.use_batch_upsert`); never deletes
 - Public API: `import()` (full), `importPartial()` (specific record IDs)
 
+#### `Reconciler` (Sheet ⇄ DB)
+- Two-way reconcile engine for bidirectional models (implement both
+  `SheetSyncable` + `SheetImportable`)
+- Matches by primary key; detects which side changed vs. a content-hash
+  **baseline**; resolves genuine conflicts by a fixed source-of-truth
+  (`getSyncSourceOfTruth()` / `config('syncro-sheet.defaults.source_of_truth')`)
+- Writes DB→sheet via row-level `GoogleClient::updateRows()` (+ append for new),
+  and sheet→DB via upsert; never deletes
+- Public API: `reconcile()` (driven by `SyncManager::sync()`)
+
+#### `SnapshotManager` + `SyncSnapshot` (model)
+- Per-record content-hash baseline in the `sync_snapshots` table
+  (unique `[model_class, record_id]`), used by `Reconciler` to tell which side
+  changed since the last sync
+- `baselineFor()` loads the map, `storeMany()` upserts it after each reconcile
+
 #### `DataTransformer`
 - Converts model data to sheet rows
 - Handles data type conversions

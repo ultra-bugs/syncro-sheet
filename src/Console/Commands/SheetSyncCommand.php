@@ -26,7 +26,7 @@ class SheetSyncCommand extends Command
                           {model : The model class to sync}
                           {--ids=* : Specific record IDs for partial sync}
                           {--M|mode= : Sync mode (append/replace)}
-                          {--D|direction=export : Sync direction (export: DB->Sheet, import: Sheet->DB)}
+                          {--D|direction=export : Sync direction (export: DB->Sheet, import: Sheet->DB, both: two-way reconcile)}
                           {--F|force : using replace mode}';
 
     protected $description = 'Sync model data with Google Sheets';
@@ -55,8 +55,9 @@ class SheetSyncCommand extends Command
             $syncState = match ($direction) {
                 SyncManager::DIRECTION_IMPORT => $this->runImport($syncManager, $modelClass, $ids, $mode),
                 SyncManager::DIRECTION_EXPORT => $this->runExport($syncManager, $modelClass, $ids, $mode),
+                'both', SyncManager::DIRECTION_BIDIRECTIONAL => $this->runBidirectional($syncManager, $modelClass, $mode),
                 default => throw new \InvalidArgumentException(
-                    "Unsupported direction [{$direction}]. Use 'export' or 'import'."
+                    "Unsupported direction [{$direction}]. Use 'export', 'import' or 'both'."
                 ),
             };
 
@@ -94,5 +95,13 @@ class SheetSyncCommand extends Command
         $this->info("Starting partial import for {$modelClass} with IDs: ".implode(', ', $ids));
 
         return $syncManager->importPartial($modelClass, $ids, ['sync_mode' => $mode]);
+    }
+
+    private function runBidirectional(SyncManager $syncManager, string $modelClass, ?string $mode)
+    {
+        // Reconcile is always a full pass; --ids is ignored here.
+        $this->info("Starting bidirectional sync for {$modelClass}");
+
+        return $syncManager->sync($modelClass, ['sync_mode' => $mode]);
     }
 }

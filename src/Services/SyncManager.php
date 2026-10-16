@@ -42,6 +42,7 @@ class SyncManager
     public function __construct(
         private readonly Exporter $exporter,
         private readonly Importer $importer,
+        private readonly Reconciler $reconciler,
         private readonly StateManager $stateManager,
         private readonly SyncLogger $logger,
         private readonly NotificationManager $notificationManager,
@@ -145,6 +146,34 @@ class SyncManager
             return $syncState->fresh();
         } catch (\Exception $e) {
             $this->handleSyncError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Two-way reconcile between the model table and the sheet (Sheet <-> DB).
+     */
+    public function sync(string $modelClass, array $options = []): SyncState
+    {
+        $this->validateModel($modelClass);
+        $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        $this->logger->info("Starting bidirectional sync for {$modelClass}");
+        $syncMode = $this->determineSyncMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_BIDIRECTIONAL);
+        $this->notificationManager->notifyStart($syncState);
+
+        try {
+            $result = $this->reconciler->reconcile($modelClass, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+            $this->notificationManager->notifyCompletion($syncState);
+
+            $this->logger->info("Completed bidirectional sync for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->errorHandler->handleError($syncState, $e);
             throw $e;
         }
     }

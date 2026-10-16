@@ -34,6 +34,9 @@ class FakeGoogleClient extends GoogleClient
     /** @var array<int, string> Headers written via setHeaders(). */
     public array $headersSet = [];
 
+    /** @var array<int, array<int, mixed>> Row-level updates captured: rowIndex => values. */
+    public array $updatedByIndex = [];
+
     public bool $cleared = false;
 
     public function __construct()
@@ -70,5 +73,10 @@ class FakeGoogleClient extends GoogleClient
     {
         $this->cleared = true;
         $this->sheetValues = [];
+    }
+
+    public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
+    {
+        $this->updatedByIndex = array_replace($this->updatedByIndex, $rowsByIndex);
     }
 }

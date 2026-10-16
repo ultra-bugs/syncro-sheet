@@ -80,6 +80,48 @@ class DataTransformer
     }
 
     /**
+     * Produce an ordered list of formatted cell values for the given headers,
+     * ready to be written to a sheet row.
+     *
+     * @param  array<string, mixed>  $assoc    header => value
+     * @param  array<int, string>    $headers  the column order to emit
+     * @return array<int, string>
+     */
+    public function formatRow(array $assoc, array $headers): array
+    {
+        $row = [];
+        foreach ($headers as $header) {
+            $row[] = $this->formatValue($assoc[$header] ?? null);
+        }
+
+        return $row;
+    }
+
+    /**
+     * Build a canonical content hash for one record/row, used by the reconciler
+     * to compare the DB side and the sheet side on equal footing.
+     *
+     * Both sides run through formatValue() over the same ordered header subset
+     * (minus $ignore), so DB null == sheet '' and DB 10 == sheet '10'.
+     *
+     * @param  array<string, mixed>  $assoc    header => value (DB toSheetRow() or a sheet row)
+     * @param  array<int, string>    $headers  the column set to hash, in order
+     * @param  array<int, string>    $ignore   columns to exclude (e.g. volatile timestamps)
+     */
+    public function canonicalHash(array $assoc, array $headers, array $ignore = []): string
+    {
+        $canonical = [];
+        foreach ($headers as $header) {
+            if (in_array($header, $ignore, true)) {
+                continue;
+            }
+            $canonical[$header] = $this->formatValue($assoc[$header] ?? null);
+        }
+
+        return hash('xxh3', json_encode($canonical));
+    }
+
+    /**
      * Format a value for Google Sheets
      */
     private function formatValue($value): string

@@ -10,8 +10,9 @@ Laravel package for efficient synchronization between your models and Google She
 
 - 🔄 Bidirectional sync between Laravel models and Google Sheets
   - **Export** (DB → Sheet) via `SheetSyncable`
-  - **Import** (Sheet → DB) via `SheetImportable`, upsert-by-primary-key (Phase 1)
-  - Full two-way reconcile with conflict resolution is the next phase
+  - **Import** (Sheet → DB) via `SheetImportable`, upsert-by-primary-key
+  - **Two-way reconcile** (`sync()`) — detects which side changed since the last
+    sync and propagates it, resolving genuine conflicts by a fixed source-of-truth
 - 📦 Batch processing with memory efficiency
 - 🎯 Support for both full and partial syncs
 - 💾 Sophisticated state tracking and resume capability
@@ -220,6 +221,44 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 > (one query per chunk, skips model events/mutators) for large trusted imports.
 > Models with a non-numeric (UUID/string) primary key are not supported yet
 > (the `sync_entries.record_id` column is a `bigInteger`).
+
+### 5. Bidirectional (two-way reconcile)
+
+For a model that implements **both** `SheetSyncable` and `SheetImportable`, a
+single `sync()` call reconciles both directions:
+
+```php
+use Zuko\SyncroSheet\Facades\SyncroSheet;
+
+$syncState = SyncroSheet::sync(Product::class); // direction = 'bidirectional'
+```
+
+```bash
+php artisan sheet:sync Product --direction=both
+```
+
+How it decides, per record (matched by primary key):
+
+- A content-hash **baseline** of each record's last-synced state is kept in the
+  `sync_snapshots` table. The reconciler compares the current DB-side and
+  sheet-side hashes against that baseline.
+- Only the DB changed → the sheet row is updated in place; only the sheet
+  changed → the record is upserted into the DB.
+- **Both changed (a real conflict)** → the **source of truth** wins. Set it per
+  model with `getSyncSourceOfTruth(): string` (`'db'` or `'sheet'`), falling back
+  to `config('syncro-sheet.defaults.source_of_truth')`.
+- A record present on only one side is propagated to the other. **Nothing is
+  deleted** — a row missing from the sheet is re-exported, a record missing from
+  the DB is re-created.
+
+> **Volatile columns.** Change detection hashes the sheet row, so volatile fields
+> (e.g. `updated_at`) would make the DB look "changed" every run. They are
+> excluded via `config('syncro-sheet.defaults.reconcile.hash_ignore')` (default
+> `['updated_at']`); a model can override with `syncHashIgnore(): array`.
+>
+> **First run** (no baseline yet): records present on both sides that differ are
+> treated as conflicts and resolved by the source of truth; the baseline is
+> seeded afterwards.
 
 ## Advanced Usage
 

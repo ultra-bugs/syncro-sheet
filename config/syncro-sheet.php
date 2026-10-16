@@ -34,6 +34,13 @@ return [
             // false -> Model::updateOrCreate() per row (fires events, respects casts)
             'use_batch_upsert' => false,
         ],
+
+        'reconcile' => [
+            // Columns excluded from the content-hash change detection used by the
+            // two-way reconcile (volatile fields that would otherwise mark every
+            // record as "changed"). Models may override via syncHashIgnore().
+            'hash_ignore' => ['updated_at'],
+        ],
     ],
 
     /*

@@ -22,6 +22,8 @@ use Illuminate\Support\ServiceProvider;
 use Zuko\SyncroSheet\Services\Exporter;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\Importer;
+use Zuko\SyncroSheet\Services\Reconciler;
+use Zuko\SyncroSheet\Services\SnapshotManager;
 use Zuko\SyncroSheet\Services\StateManager;
 use Zuko\SyncroSheet\Services\SyncManager;
 
@@ -60,6 +62,8 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->app->singleton(StateManager::class);
         $this->app->singleton(Exporter::class);
         $this->app->singleton(Importer::class);
+        $this->app->singleton(Reconciler::class);
+        $this->app->singleton(SnapshotManager::class);
         $this->app->singleton(GoogleClient::class);
         // Register facade
         $loader = AliasLoader::getInstance();
