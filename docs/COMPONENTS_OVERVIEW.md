@@ -205,6 +205,24 @@ return [
 ];
 ```
 
+### 7. Scheduling / Trigger Components
+
+#### `SyncScheduler` (dispatcher)
+- Reads `scheduler.models` (each as a direction) and hands each off to the
+  configured driver. Driven by the `sheet:scheduled-sync` command, which the
+  provider registers on Laravel's scheduler when `scheduler.enabled`.
+
+#### `SyncDriver` (interface) + drivers
+- `InlineDriver` (`driver=sync`) — runs the sync in-process via `SyncManager`.
+- `QueueDriver` (`driver=queue`) — fans out to queued jobs; for bidirectional it
+  runs `Reconciler::decide()` centrally then dispatches apply jobs.
+- (`parallel`, a fork-based consumer, is planned for a later stage.)
+
+#### Jobs
+- `PartialSyncJob` / `PartialImportJob` — export / import a chunk of record IDs.
+- `ImportBatchJob` — upsert a chunk of already-read sheet rows (no re-read).
+- `ReconcileApplyJob` — apply a chunk of reconcile decisions from `decide()`.
+
 # Component Interactions
 
 

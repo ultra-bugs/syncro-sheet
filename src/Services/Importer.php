@@ -56,6 +56,37 @@ class Importer
     }
 
     /**
+     * Upsert a set of already-read sheet rows (no sheet read here). Used by the
+     * queue driver's ImportBatchJob, which carries the rows in its payload.
+     *
+     * @param  array<int, string>        $headers   the sheet header row
+     * @param  array<int, array<mixed>>  $rawRows   data rows (no header)
+     * @return array<int, int|string>    persisted primary keys
+     */
+    public function importRows(string $modelClass, array $headers, array $rawRows): array
+    {
+        /** @var SheetImportable $model */
+        $model = new $modelClass;
+        $keyColumn = $model->getSheetKeyColumn();
+        $modelKey = $model->getKeyName();
+
+        if (! in_array($keyColumn, $headers, true)) {
+            throw new ImportException(
+                "Sheet is missing the key column [{$keyColumn}] required to import {$modelClass}"
+            );
+        }
+
+        $attributeRows = $this->prepareAttributeRows($model, $headers, $rawRows, $keyColumn, $modelKey, null);
+        if (empty($attributeRows)) {
+            return [];
+        }
+
+        return (bool) config('syncro-sheet.defaults.import.use_batch_upsert', false)
+            ? $this->batchUpsert($modelClass, $attributeRows, $modelKey)
+            : $this->rowByRowUpsert($modelClass, $attributeRows, $modelKey);
+    }
+
+    /**
      * Read the whole sheet, then upsert the (optionally filtered) rows in
      * memory-efficient chunks.
      *

@@ -39,13 +39,47 @@ class Reconciler
     ) {
     }
 
+    /**
+     * Full two-way reconcile in one pass (driver=sync). Equivalent to
+     * decide() followed by applyChunk() over the whole plan.
+     */
     public function reconcile(string $modelClass, SyncState $syncState): array
+    {
+        $plan = $this->decide($modelClass);
+
+        $pks = $this->applyChunk($modelClass, $plan['decisions']);
+
+        // Seed a baseline for records that already agreed (no action needed).
+        $this->stateManager->storeSnapshots($modelClass, $plan['seeds']);
+
+        if (! empty($pks)) {
+            $this->stateManager->recordBatchSync($syncState, $pks);
+        }
+
+        $this->logger->info("Reconciled {$modelClass}: ".count($pks).' record(s)');
+
+        return [
+            'total_processed' => count($pks),
+            'last_processed_id' => empty($pks) ? null : max($pks),
+        ];
+    }
+
+    /**
+     * Decision phase: read both sides + baseline and resolve the winner per
+     * record. Pure (reads only, no writes) so a dispatcher can run it centrally
+     * and then fan the resulting plan out to apply jobs.
+     *
+     * @return array{decisions: array<int, array{pk: int|string, action: string, payload: array, hash: string}>, seeds: array<int|string, string>}
+     *   - decisions: actionable records. action 'import' -> payload {assoc};
+     *     action 'export' -> payload {rowIndex (int|null), values (ordered list)}.
+     *   - seeds: pk => hash for records that already agree but have no baseline yet.
+     */
+    public function decide(string $modelClass): array
     {
         /** @var SheetSyncable $model */
         $model = new $modelClass;
 
         $keyColumn = $model->getSheetKeyColumn();
-        $modelKey = $model->getKeyName();
         $headers = $this->resolveHeaders($model);
         $ignore = $this->resolveHashIgnore($model);
         $sot = $this->resolveSourceOfTruth($model);
@@ -58,18 +92,12 @@ class Reconciler
 
         $sheetByPk = $this->readSheet($model, $keyColumn, $headers, $ignore);
         $dbByPk = $this->readDatabase($modelClass, $headers, $ignore);
-
         $baseline = $this->stateManager->baselineFor($modelClass);
 
-        $toImport = [];     // pk => sheet assoc   (sheet wins -> upsert DB)
-        $rowUpdates = [];   // rowIndex => values  (db wins, row already in sheet)
-        $rowAppends = [];   // assoc rows          (db wins, new to sheet)
-        $newBaseline = [];  // pk => content hash
-        $processedPks = [];
+        $decisions = [];
+        $seeds = [];
 
-        $allPks = array_unique(array_merge(array_keys($dbByPk), array_keys($sheetByPk)));
-
-        foreach ($allPks as $pk) {
+        foreach (array_unique(array_merge(array_keys($dbByPk), array_keys($sheetByPk))) as $pk) {
             $inDb = isset($dbByPk[$pk]);
             $inSheet = isset($sheetByPk[$pk]);
             $base = $baseline[$pk] ?? null;
@@ -84,45 +112,81 @@ class Reconciler
             );
 
             if ($winner === 'none') {
-                // Content already agrees; just make sure a baseline exists.
                 if ($base === null) {
-                    $newBaseline[$pk] = $dbByPk[$pk]['hash'];
+                    $seeds[$pk] = $dbByPk[$pk]['hash'];
                 }
 
                 continue;
             }
 
             if ($winner === 'sheet') {
-                $toImport[$pk] = $sheetByPk[$pk]['assoc'];
-                $newBaseline[$pk] = $sheetByPk[$pk]['hash'];
+                $decisions[] = [
+                    'pk' => $pk,
+                    'action' => 'import',
+                    'payload' => ['assoc' => $sheetByPk[$pk]['assoc']],
+                    'hash' => $sheetByPk[$pk]['hash'],
+                ];
             } else { // db wins
-                $values = $this->transformer->formatRow($dbByPk[$pk]['model']->toSheetRow(), $headers);
-                if ($inSheet) {
-                    $rowUpdates[$sheetByPk[$pk]['rowIndex']] = $values;
-                } else {
-                    $rowAppends[] = array_combine($headers, $values);
-                }
-                $newBaseline[$pk] = $dbByPk[$pk]['hash'];
+                $decisions[] = [
+                    'pk' => $pk,
+                    'action' => 'export',
+                    'payload' => [
+                        'rowIndex' => $inSheet ? $sheetByPk[$pk]['rowIndex'] : null,
+                        'values' => $this->transformer->formatRow($dbByPk[$pk]['model']->toSheetRow(), $headers),
+                    ],
+                    'hash' => $dbByPk[$pk]['hash'],
+                ];
             }
+        }
 
-            $processedPks[] = $pk;
+        return ['decisions' => $decisions, 'seeds' => $seeds];
+    }
+
+    /**
+     * Apply phase: execute a chunk of decisions (from {@see decide()}) and store
+     * the new baseline for those records. Returns the processed PKs. Safe to run
+     * from a queued job.
+     *
+     * @param  array<int, array{pk: int|string, action: string, payload: array, hash: string}>  $decisions
+     * @return array<int, int|string>
+     */
+    public function applyChunk(string $modelClass, array $decisions): array
+    {
+        if (empty($decisions)) {
+            return [];
+        }
+
+        /** @var SheetSyncable $model */
+        $model = new $modelClass;
+        $modelKey = $model->getKeyName();
+        $keyColumn = $model->getSheetKeyColumn();
+        $headers = $this->resolveHeaders($model);
+
+        $toImport = [];
+        $rowUpdates = [];
+        $rowAppends = [];
+        $newBaseline = [];
+        $pks = [];
+
+        foreach ($decisions as $decision) {
+            $pk = $decision['pk'];
+            $pks[] = $pk;
+            $newBaseline[$pk] = $decision['hash'];
+
+            if ($decision['action'] === 'import') {
+                $toImport[$pk] = $decision['payload']['assoc'];
+            } elseif ($decision['payload']['rowIndex'] !== null) {
+                $rowUpdates[$decision['payload']['rowIndex']] = $decision['payload']['values'];
+            } else {
+                $rowAppends[] = array_combine($headers, $decision['payload']['values']);
+            }
         }
 
         $this->applyImports($modelClass, $model, $modelKey, $keyColumn, $toImport);
         $this->applyExports($model, $rowUpdates, $rowAppends);
-
         $this->stateManager->storeSnapshots($modelClass, $newBaseline);
 
-        if (! empty($processedPks)) {
-            $this->stateManager->recordBatchSync($syncState, $processedPks);
-        }
-
-        $this->logger->info("Reconciled {$modelClass}: ".count($processedPks).' record(s)');
-
-        return [
-            'total_processed' => count($processedPks),
-            'last_processed_id' => empty($processedPks) ? null : max($processedPks),
-        ];
+        return $pks;
     }
 
     /**

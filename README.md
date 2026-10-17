@@ -260,6 +260,47 @@ How it decides, per record (matched by primary key):
 > treated as conflicts and resolved by the source of truth; the baseline is
 > seeded afterwards.
 
+### 6. Scheduling / automatic triggering
+
+Sync on a schedule instead of calling it by hand. Configure which models sync,
+how often, and which **driver** runs the work:
+
+```php
+// config/syncro-sheet.php
+'scheduler' => [
+    'enabled'   => true,
+    'driver'    => 'sync',                 // 'sync' (inline) | 'queue' (fan out to jobs)
+    'frequency' => 'everyFifteenMinutes',  // a Schedule method name, or a cron string
+    'models'    => [
+        Product::class => 'both',          // 'export' | 'import' | 'both'
+        Order::class   => ['direction' => 'export'],
+    ],
+    'queue' => [
+        'connection' => null,
+        'queue'      => 'syncro-sheet',
+        'chunk'      => 500,
+    ],
+],
+```
+
+When `enabled`, the package registers the `sheet:scheduled-sync` command on
+Laravel's scheduler at the configured `frequency`. You can also run it by hand:
+
+```bash
+php artisan sheet:scheduled-sync
+```
+
+- **`sync` driver** — runs each model's sync inline, in the scheduler process.
+- **`queue` driver** — the scheduler stays the dispatcher and fans work out to
+  queued jobs: export reads the pending record IDs and dispatches `PartialSyncJob`
+  per chunk; import reads the sheet and dispatches `ImportBatchJob` per chunk;
+  bidirectional runs the conflict-resolution **decide** phase centrally
+  (`Reconciler::decide()`) and dispatches `ReconcileApplyJob` per chunk to apply
+  the result. Make sure a queue worker is running.
+
+> A fork-based `parallel` driver (a true parallel consumer) is planned for a
+> later stage.
+
 ## Advanced Usage
 
 ### 1. Custom Data Transformation

@@ -85,4 +85,29 @@ return [
             'sync_completed' => false,
         ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scheduler / trigger
+    |--------------------------------------------------------------------------
+    | Automated, configurable triggering of syncs. The scheduler is always the
+    | dispatcher; the driver decides HOW the work runs:
+    |   - 'sync'  : run inline inside the scheduled command
+    |   - 'queue' : fan out to queued jobs (scheduler still reads + dispatches)
+    | ('parallel', a fork-based consumer, is planned for a later stage.)
+    */
+    'scheduler' => [
+        'enabled' => false,
+        'driver' => 'sync',                    // sync | queue
+        'frequency' => 'everyFifteenMinutes',  // Schedule method name, or a cron string
+        'models' => [
+            // Product::class => 'both',                 // export | import | both
+            // Order::class   => ['direction' => 'export'],
+        ],
+        'queue' => [
+            'connection' => null,              // null = default connection
+            'queue' => 'syncro-sheet',
+            'chunk' => 500,                    // records / rows per batch job
+        ],
+    ],
 ];
