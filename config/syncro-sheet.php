@@ -23,9 +23,29 @@ return [
     */
     'defaults' => [
         'batch_size' => 100,
-        'sync_mode' => 'append',
+        'direction' => 'export',        // data flow: export (DB->Sheet) | import (Sheet->DB) | bidirectional
+        'source_of_truth' => 'db',      // db | sheet — winning side on conflict (bidirectional, Phase 2)
         'timeout' => 600,
         'retries' => 3,
+
+        'export' => [
+            // How export writes to the sheet (NOT a direction): append rows, or
+            // clear then write. Only meaningful for the export direction.
+            'write_mode' => 'append',   // append | replace
+        ],
+
+        'import' => [
+            // true  -> Model::upsert() (one query per chunk, skips model events/mutators)
+            // false -> Model::updateOrCreate() per row (fires events, respects casts)
+            'use_batch_upsert' => false,
+        ],
+
+        'reconcile' => [
+            // Columns excluded from the content-hash change detection used by the
+            // two-way reconcile (volatile fields that would otherwise mark every
+            // record as "changed"). Models may override via syncHashIgnore().
+            'hash_ignore' => ['updated_at'],
+        ],
     ],
 
     /*
@@ -63,6 +83,31 @@ return [
             'error' => true,
             'retry_exhausted' => true,
             'sync_completed' => false,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scheduler / trigger
+    |--------------------------------------------------------------------------
+    | Automated, configurable triggering of syncs. The scheduler is always the
+    | dispatcher; the driver decides HOW the work runs:
+    |   - 'sync'  : run inline inside the scheduled command
+    |   - 'queue' : fan out to queued jobs (scheduler still reads + dispatches)
+    | ('parallel', a fork-based consumer, is planned for a later stage.)
+    */
+    'scheduler' => [
+        'enabled' => false,
+        'driver' => 'sync',                    // sync | queue
+        'frequency' => 'everyFifteenMinutes',  // Schedule method name, or a cron string
+        'models' => [
+            // Product::class => 'both',                 // export | import | both
+            // Order::class   => ['direction' => 'export'],
+        ],
+        'queue' => [
+            'connection' => null,              // null = default connection
+            'queue' => 'syncro-sheet',
+            'chunk' => 500,                    // records / rows per batch job
         ],
     ],
 ];

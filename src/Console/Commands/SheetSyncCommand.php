@@ -22,10 +22,11 @@ use Zuko\SyncroSheet\Services\SyncManager;
 
 class SheetSyncCommand extends Command
 {
-    protected $signature = 'sheet:sync 
+    protected $signature = 'sheet:sync
                           {model : The model class to sync}
                           {--ids=* : Specific record IDs for partial sync}
                           {--M|mode= : Sync mode (append/replace)}
+                          {--D|direction=export : Sync direction (export: DB->Sheet, import: Sheet->DB, both: two-way reconcile)}
                           {--F|force : using replace mode}';
 
     protected $description = 'Sync model data with Google Sheets';
@@ -39,20 +40,26 @@ class SheetSyncCommand extends Command
             $modelClass = 'App\\Models\\'.$modelClass;
         }
 
+        $direction = $this->option('direction') ?: SyncManager::DIRECTION_EXPORT;
         $ids = $this->option('ids');
         $mode = $this->option('mode');
         if (! $mode && $this->option('force')) {
             $mode = 'replace';
         }
+
         try {
-            if (empty($ids)) {
-                $this->info("Starting full sync for {$modelClass}");
-                $syncState = $syncManager->fullSync($modelClass, ['sync_mode' => $mode]);
-            } else {
-                $ids = is_array($ids) ? $ids : explode(',', $ids[0]);
-                $this->info("Starting partial sync for {$modelClass} with IDs: ".implode(', ', $ids));
-                $syncState = $syncManager->partialSync($modelClass, $ids, ['sync_mode' => $mode]);
-            }
+            $ids = empty($ids)
+                ? []
+                : (is_array($ids) ? $ids : explode(',', $ids[0]));
+
+            $syncState = match ($direction) {
+                SyncManager::DIRECTION_IMPORT => $this->runImport($syncManager, $modelClass, $ids, $mode),
+                SyncManager::DIRECTION_EXPORT => $this->runExport($syncManager, $modelClass, $ids, $mode),
+                'both', SyncManager::DIRECTION_BIDIRECTIONAL => $this->runBidirectional($syncManager, $modelClass, $mode),
+                default => throw new \InvalidArgumentException(
+                    "Unsupported direction [{$direction}]. Use 'export', 'import' or 'both'."
+                ),
+            };
 
             $this->info("Sync completed! Processed {$syncState->total_processed} records.");
 
@@ -62,5 +69,39 @@ class SheetSyncCommand extends Command
 
             return self::FAILURE;
         }
+    }
+
+    private function runExport(SyncManager $syncManager, string $modelClass, array $ids, ?string $mode)
+    {
+        if (empty($ids)) {
+            $this->info("Starting full export for {$modelClass}");
+
+            return $syncManager->fullSync($modelClass, ['write_mode' => $mode]);
+        }
+
+        $this->info("Starting partial export for {$modelClass} with IDs: ".implode(', ', $ids));
+
+        return $syncManager->partialSync($modelClass, $ids, ['write_mode' => $mode]);
+    }
+
+    private function runImport(SyncManager $syncManager, string $modelClass, array $ids, ?string $mode)
+    {
+        if (empty($ids)) {
+            $this->info("Starting full import for {$modelClass}");
+
+            return $syncManager->importFull($modelClass, ['write_mode' => $mode]);
+        }
+
+        $this->info("Starting partial import for {$modelClass} with IDs: ".implode(', ', $ids));
+
+        return $syncManager->importPartial($modelClass, $ids, ['write_mode' => $mode]);
+    }
+
+    private function runBidirectional(SyncManager $syncManager, string $modelClass, ?string $mode)
+    {
+        // Reconcile is always a full pass; --ids is ignored here.
+        $this->info("Starting bidirectional sync for {$modelClass}");
+
+        return $syncManager->sync($modelClass, ['write_mode' => $mode]);
     }
 }

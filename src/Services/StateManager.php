@@ -30,12 +30,17 @@ class StateManager
     /**
      * Initialize a new sync state
      */
-    public function initializeSync(string $modelClass, string $syncType, string $syncMode): SyncState
-    {
+    public function initializeSync(
+        string $modelClass,
+        string $syncType,
+        string $writeMode,
+        string $direction = SyncManager::DIRECTION_EXPORT
+    ): SyncState {
         return SyncState::create([
             'model_class' => $modelClass,
             'sync_type' => $syncType,
-            'sync_mode' => $syncMode,
+            'direction' => $direction,
+            'write_mode' => $writeMode,
             'status' => 'running',
             'started_at' => now(),
         ]);
@@ -105,5 +110,51 @@ class StateManager
             ->where('status', 'completed')
             ->latest('completed_at')
             ->first();
+    }
+
+    /**
+     * Load the reconcile content-hash baseline for a model as a map of
+     * record_id => content_hash (from the sync_snapshots table).
+     *
+     * @return array<int|string, string>
+     */
+    public function baselineFor(string $modelClass): array
+    {
+        return DB::table('sync_snapshots')
+            ->where('model_class', $modelClass)
+            ->pluck('content_hash', 'record_id')
+            ->all();
+    }
+
+    /**
+     * Upsert the reconcile baseline for a batch of records.
+     *
+     * @param  array<int|string, string>  $hashesByRecordId  record_id => content_hash
+     */
+    public function storeSnapshots(string $modelClass, array $hashesByRecordId): void
+    {
+        if (empty($hashesByRecordId)) {
+            return;
+        }
+
+        $now = now();
+
+        $rows = [];
+        foreach ($hashesByRecordId as $recordId => $hash) {
+            $rows[] = [
+                'model_class' => $modelClass,
+                'record_id' => $recordId,
+                'content_hash' => $hash,
+                'synced_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        DB::table('sync_snapshots')->upsert(
+            $rows,
+            ['model_class', 'record_id'],
+            ['content_hash', 'synced_at', 'updated_at']
+        );
     }
 }

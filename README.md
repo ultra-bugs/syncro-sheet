@@ -1,14 +1,41 @@
-# WIP
-
-This package is not avail on packagist yet. If you interesting, take a local clone or zip download then try it out.
-
 # SyncroSheet
 
-Laravel package for efficient synchronization between your models and Google Sheets with advanced state tracking and error handling.
+***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
+
+**Last updated:** 2026-10-17 · verified against [`4022c3b`](https://github.com/ultra-bugs/syncro-sheet/commit/4022c3b6832be1437702d570fd04142a2b7cb3b0)
+
+> [!IMPORTANT]
+> Available on Packagist — install with `composer require zuko/syncro-sheet`.
+> Export, import, and two-way reconcile are all supported. For how the pieces fit
+> together, read the [architecture overview](docs/COMPONENTS_OVERVIEW.md).
+
+## Documentation
+
+| # | Read | For | Answers |
+|---|---|---|---|
+| 1 | This README | Everyone | Install, configure, day-to-day usage |
+| 2 | [architecture overview](docs/COMPONENTS_OVERVIEW.md) | Developers / contributors | Components, data flow, lifecycle, glossary |
+
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Basic Usage](#basic-usage)
+- [Advanced Usage](#advanced-usage)
+- [Best Practices](#best-practices)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
-- 🔄 Sync from Laravel models to Google Sheets. Bidirectional sync is planned to implement
+- 🔄 Bidirectional sync between Laravel models and Google Sheets
+  - **Export** (DB → Sheet) via `SheetExportable`
+  - **Import** (Sheet → DB) via `SheetImportable`, upsert-by-primary-key
+  - **Bidirectional** model = `SheetSyncable` (extends both of the above)
+  - **Two-way reconcile** (`sync()`) — detects which side changed since the last
+    sync and propagates it, resolving genuine conflicts by a fixed source-of-truth
 - 📦 Batch processing with memory efficiency
 - 🎯 Support for both full and partial syncs
 - 💾 Sophisticated state tracking and resume capability
@@ -69,11 +96,16 @@ If you already set these authorization values. You can leave env untouched.
 
 return [
     'defaults' => [
-        'batch_size' => 1000,
-        'timeout' => 600,
-        'retries' => 3
+        'batch_size'      => 100,
+        'direction'       => 'export',   // export | import | bidirectional
+        'source_of_truth' => 'db',       // db | sheet (conflict winner on reconcile)
+        'timeout'         => 600,
+        'retries'         => 3,
+        'export'          => ['write_mode' => 'append'],      // append | replace
+        'import'          => ['use_batch_upsert' => false],
+        'reconcile'       => ['hash_ignore' => ['updated_at']],
     ],
-    // ... other configurations
+    // 'logging', 'sheets', 'notifications', 'scheduler' — see the published config
 ];
 ```
 
@@ -82,9 +114,9 @@ return [
 ### 1. Make Your Model Sync-able
 
 ```php
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 
-class Product extends Model implements SheetSyncable
+class Product extends Model implements SheetExportable
 {
     public function getSheetIdentifier(): string
     {
@@ -145,12 +177,156 @@ $lastSync = SyncroSheet::getLastSync(Product::class);
 ### 3. Artisan Commands
 
 ```bash
-# Full sync
+# Full export (DB -> Sheet) — default direction
 php artisan sheet:sync Product
 
-# Partial sync
+# Partial export
 php artisan sheet:sync Product --ids=1,2,3
+
+# Full import (Sheet -> DB)
+php artisan sheet:sync Product --direction=import
+
+# Partial import (only these primary keys)
+php artisan sheet:sync Product --direction=import --ids=1,2,3
 ```
+
+### 4. Import (Sheet → DB)
+
+Make your model importable by implementing `SheetImportable` (or `SheetSyncable`
+if it exports too, as below). The `InteractsWithSheet` trait provides defaults
+(`getSheetKeyColumn()` returns the model key name, `fromSheetRow()` maps headers
+straight to attributes), so most models only need to declare the interface:
+
+```php
+use Zuko\SyncroSheet\Contracts\SheetSyncable; // = SheetExportable + SheetImportable
+use Zuko\SyncroSheet\Traits\InteractsWithSheet;
+
+class Product extends Model implements SheetSyncable
+{
+    use InteractsWithSheet;
+
+    // ...export methods (getSheetIdentifier/getSheetName/toSheetRow)...
+
+    // Override only when the sheet layout differs from the table:
+    public function getSheetKeyColumn(): string
+    {
+        return 'id'; // sheet header holding the primary key
+    }
+
+    public function fromSheetRow(array $row): array
+    {
+        return [
+            'name'  => $row['Product Name'] ?? null,
+            'price' => $row['Price'] ?? null,
+            'stock' => $row['In Stock'] ?? 0,
+        ];
+    }
+}
+```
+
+```php
+use Zuko\SyncroSheet\Facades\SyncroSheet;
+
+// Pull the whole sheet back into the DB (update existing by PK, create new)
+$syncState = SyncroSheet::importFull(Product::class);
+
+// Import only specific primary keys
+$syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
+```
+
+> **Primary key is required.** A bidirectional model (`SheetSyncable`) must
+> expose its key column in the exported row — the key has to round-trip through
+> the sheet so import can match
+> rows back. If `getSheetKeyColumn()` is absent from `toSheetRow()` /
+> `defaultSheetHeaders()`, both `fullSync()` and `importFull()` throw a
+> `SyncException` up front.
+>
+> **Matching & semantics:** rows are matched to records by the primary-key
+> column (`getSheetKeyColumn()`). Writes are **upsert** — matched rows update,
+> new rows create, nothing is deleted. Set
+> `syncro-sheet.defaults.import.use_batch_upsert = true` to use `Model::upsert()`
+> (one query per chunk, skips model events/mutators) for large trusted imports.
+> Models with a non-numeric (UUID/string) primary key are not supported yet
+> (the `sync_entries.record_id` column is a `bigInteger`).
+
+### 5. Bidirectional (two-way reconcile)
+
+For a bidirectional model (`SheetSyncable`, i.e. `SheetExportable` +
+`SheetImportable`), a single `sync()` call reconciles both directions:
+
+```php
+use Zuko\SyncroSheet\Facades\SyncroSheet;
+
+$syncState = SyncroSheet::sync(Product::class); // direction = 'bidirectional'
+```
+
+```bash
+php artisan sheet:sync Product --direction=both
+```
+
+How it decides, per record (matched by primary key):
+
+- A content-hash **baseline** of each record's last-synced state is kept in the
+  `sync_snapshots` table. The reconciler compares the current DB-side and
+  sheet-side hashes against that baseline.
+- Only the DB changed → the sheet row is updated in place; only the sheet
+  changed → the record is upserted into the DB.
+- **Both changed (a real conflict)** → the **source of truth** wins. Set it per
+  model with `getSyncSourceOfTruth(): string` (`'db'` or `'sheet'`), falling back
+  to `config('syncro-sheet.defaults.source_of_truth')`.
+- A record present on only one side is propagated to the other. **Nothing is
+  deleted** — a row missing from the sheet is re-exported, a record missing from
+  the DB is re-created.
+
+> **Volatile columns.** Change detection hashes the sheet row, so volatile fields
+> (e.g. `updated_at`) would make the DB look "changed" every run. They are
+> excluded via `config('syncro-sheet.defaults.reconcile.hash_ignore')` (default
+> `['updated_at']`); a model can override with `syncHashIgnore(): array`.
+>
+> **First run** (no baseline yet): records present on both sides that differ are
+> treated as conflicts and resolved by the source of truth; the baseline is
+> seeded afterwards.
+
+### 6. Scheduling / automatic triggering
+
+Sync on a schedule instead of calling it by hand. Configure which models sync,
+how often, and which **driver** runs the work:
+
+```php
+// config/syncro-sheet.php
+'scheduler' => [
+    'enabled'   => true,
+    'driver'    => 'sync',                 // 'sync' (inline) | 'queue' (fan out to jobs)
+    'frequency' => 'everyFifteenMinutes',  // a Schedule method name, or a cron string
+    'models'    => [
+        Product::class => 'both',          // 'export' | 'import' | 'both'
+        Order::class   => ['direction' => 'export'],
+    ],
+    'queue' => [
+        'connection' => null,
+        'queue'      => 'syncro-sheet',
+        'chunk'      => 500,
+    ],
+],
+```
+
+When `enabled`, the package registers the `sheet:scheduled-sync` command on
+Laravel's scheduler at the configured `frequency`. You can also run it by hand:
+
+```bash
+php artisan sheet:scheduled-sync
+```
+
+- **`sync` driver** — runs each model's sync inline, in the scheduler process.
+- **`queue` driver** — the scheduler stays the dispatcher and fans work out to
+  queued jobs: export reads the pending record IDs and dispatches `PartialSyncJob`
+  per chunk; import reads the sheet and dispatches `ImportBatchJob` per chunk;
+  bidirectional runs the conflict-resolution **decide** phase centrally
+  (`Reconciler::decide()`) and dispatches `ReconcileApplyJob` per chunk to apply
+  the result. Make sure a queue worker is running.
+
+> A fork-based `parallel` driver (a true parallel consumer) is planned for a
+> later stage.
 
 ## Advanced Usage
 
@@ -161,7 +337,7 @@ use Zuko\SyncroSheet\Services\DataTransformer;
 
 class ProductTransformer extends DataTransformer
 {
-    protected function transformRecord(SheetSyncable $record): array
+    protected function transformRecord(SheetExportable $record): array
     {
         return [
             'ID' => $record->id,
@@ -277,8 +453,8 @@ class SlackSyncNotifier extends Notification
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Pull requests are welcome. For major changes, please open an issue first to discuss what you'd like to change.
 
 ## License
 
-The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+Released under the [MIT License](https://opensource.org/licenses/MIT).

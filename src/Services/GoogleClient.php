@@ -280,7 +280,36 @@ class GoogleClient
     }
 
     /**
-     * Generate headers from a SheetSyncable model or data
+     * Update specific rows in place, addressed by their 1-based absolute sheet
+     * row index (row 1 is the header). Used by the reconciler to write changed
+     * DB records back onto their existing sheet rows without appending dupes.
+     *
+     * @param  array<int, array<int, mixed>>  $rowsByIndex  rowIndex => ordered cell values
+     */
+    public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
+    {
+        if (empty($rowsByIndex)) {
+            return;
+        }
+
+        try {
+            $sheet = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
+
+            foreach ($rowsByIndex as $index => $values) {
+                $this->checkRateLimit();
+                $sheet->range("A{$index}")->update([array_values($values)]);
+                $this->updateRateLimit();
+            }
+
+            $this->logger->info('Updated '.count($rowsByIndex)." row(s) in sheet {$sheetName}");
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to update rows in Google Sheets: {$e->getMessage()}");
+            throw new GoogleSheetsException("Failed to update rows in Google Sheets: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Generate headers from a SheetExportable model or data
      */
     private function generateHeaders($model = null, array $data = []): array
     {

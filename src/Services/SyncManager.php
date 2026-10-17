@@ -18,16 +18,31 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
+use Zuko\SyncroSheet\Contracts\SheetImportable;
 use Zuko\SyncroSheet\Exceptions\SyncException;
 use Zuko\SyncroSheet\Models\SyncState;
 
 class SyncManager
 {
-    const AVAILABLE_SYNC_MODES = ['append', 'replace'];
+    const AVAILABLE_WRITE_MODES = ['append', 'replace'];
+
+    const DIRECTION_EXPORT = 'export';
+
+    const DIRECTION_IMPORT = 'import';
+
+    const DIRECTION_BIDIRECTIONAL = 'bidirectional';
+
+    const AVAILABLE_DIRECTIONS = [
+        self::DIRECTION_EXPORT,
+        self::DIRECTION_IMPORT,
+        self::DIRECTION_BIDIRECTIONAL,
+    ];
 
     public function __construct(
-        private readonly BatchProcessor $batchProcessor,
+        private readonly Exporter $exporter,
+        private readonly Importer $importer,
+        private readonly Reconciler $reconciler,
         private readonly StateManager $stateManager,
         private readonly SyncLogger $logger,
         private readonly NotificationManager $notificationManager,
@@ -40,12 +55,14 @@ class SyncManager
      */
     public function fullSync(string $modelClass, array $options = []): SyncState
     {
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_EXPORT);
         $this->notificationManager->notifyStart($syncState);
 
         try {
-            $result = $this->batchProcessor->process($modelClass, $syncState, $syncMode);
+            $result = $this->exporter->export($modelClass, $syncState, $writeMode);
             $this->stateManager->completeSync($syncState, $result);
             $this->notificationManager->notifyCompletion($syncState);
 
@@ -62,13 +79,14 @@ class SyncManager
     public function partialSync(string $modelClass, array $recordIds, array $options = []): SyncState
     {
         $this->validateModel($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting partial sync for {$modelClass}");
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $writeMode, self::DIRECTION_EXPORT);
 
         try {
-            $result = $this->batchProcessor->processPartial($modelClass, $recordIds, $syncState);
+            $result = $this->exporter->exportPartial($modelClass, $recordIds, $syncState);
             $this->stateManager->completeSync($syncState, $result);
 
             $this->logger->info("Completed partial sync for {$modelClass}");
@@ -76,6 +94,86 @@ class SyncManager
             return $syncState->fresh();
         } catch (\Exception $e) {
             $this->handleSyncError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Import every sheet row back into the model table (Sheet -> DB).
+     */
+    public function importFull(string $modelClass, array $options = []): SyncState
+    {
+        $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        $this->logger->info("Starting full import for {$modelClass}");
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_IMPORT);
+        $this->notificationManager->notifyStart($syncState);
+
+        try {
+            $result = $this->importer->import($modelClass, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+            $this->notificationManager->notifyCompletion($syncState);
+
+            $this->logger->info("Completed full import for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->errorHandler->handleError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Import only the sheet rows whose key matches one of $recordIds.
+     */
+    public function importPartial(string $modelClass, array $recordIds, array $options = []): SyncState
+    {
+        $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        $this->logger->info("Starting partial import for {$modelClass}");
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $writeMode, self::DIRECTION_IMPORT);
+
+        try {
+            $result = $this->importer->importPartial($modelClass, $recordIds, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+
+            $this->logger->info("Completed partial import for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->handleSyncError($syncState, $e);
+            throw $e;
+        }
+    }
+
+    /**
+     * Two-way reconcile between the model table and the sheet (Sheet <-> DB).
+     */
+    public function sync(string $modelClass, array $options = []): SyncState
+    {
+        $this->validateModel($modelClass);
+        $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        $this->logger->info("Starting bidirectional sync for {$modelClass}");
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_BIDIRECTIONAL);
+        $this->notificationManager->notifyStart($syncState);
+
+        try {
+            $result = $this->reconciler->reconcile($modelClass, $syncState);
+            $this->stateManager->completeSync($syncState, $result);
+            $this->notificationManager->notifyCompletion($syncState);
+
+            $this->logger->info("Completed bidirectional sync for {$modelClass}");
+
+            return $syncState->fresh();
+        } catch (\Exception $e) {
+            $this->errorHandler->handleError($syncState, $e);
             throw $e;
         }
     }
@@ -88,8 +186,57 @@ class SyncManager
 
         $model = new $modelClass;
 
-        if (! $model instanceof Model || ! $model instanceof SheetSyncable) {
-            throw new SyncException("Model class {$modelClass} must implement SheetSyncable interface");
+        if (! $model instanceof Model || ! $model instanceof SheetExportable) {
+            throw new SyncException("Model class {$modelClass} must implement SheetExportable interface");
+        }
+    }
+
+    private function validateImportable(string $modelClass): void
+    {
+        if (! class_exists($modelClass)) {
+            throw new SyncException("Model class {$modelClass} does not exist");
+        }
+
+        $model = new $modelClass;
+
+        if (! $model instanceof Model || ! $model instanceof SheetImportable) {
+            throw new SyncException("Model class {$modelClass} must implement SheetImportable interface");
+        }
+    }
+
+    /**
+     * Enforce the primary-key contract for bidirectional models.
+     *
+     * A model that is both exportable and importable must round-trip its
+     * primary key through the sheet: the exported row has to carry the key
+     * column so the importer can match rows back to records. Fail fast when a
+     * bidirectional model does not expose its key column.
+     */
+    private function assertBidirectionalPrimaryKey(string $modelClass): void
+    {
+        if (! class_exists($modelClass)) {
+            return; // the direction-specific validators raise the "does not exist" error
+        }
+
+        $model = new $modelClass;
+
+        // Only bidirectional models carry this requirement; single-direction
+        // models are governed by their own validation rules.
+        if (! $model instanceof SheetExportable || ! $model instanceof SheetImportable) {
+            return;
+        }
+
+        $keyColumn = $model->getSheetKeyColumn();
+
+        $headers = method_exists($model, 'defaultSheetHeaders')
+            ? $model->defaultSheetHeaders()
+            : array_keys($model->toSheetRow());
+
+        if (! in_array($keyColumn, $headers, true)) {
+            throw new SyncException(
+                "Bidirectional sync requires the primary-key column [{$keyColumn}] in the sheet row of "
+                .$modelClass.'; add it to toSheetRow()/defaultSheetHeaders() or adjust getSheetKeyColumn().'
+            );
         }
     }
 
@@ -99,23 +246,23 @@ class SyncManager
         $this->stateManager->failSync($syncState, $e->getMessage());
     }
 
-    private function determineSyncMode(string $modelClass, array $options = []): string
+    private function determineWriteMode(string $modelClass, array $options = []): string
     {
         // 1. Command line option (passed through options)
-        if (! empty($options['sync_mode'])) {
-            return $options['sync_mode'];
+        if (! empty($options['write_mode'])) {
+            return $options['write_mode'];
         }
 
         // 2. Runtime configuration through model instance
         $model = new $modelClass;
-        if (method_exists($model, 'getPreferredSyncMode')) {
-            $modelMode = $model->getPreferredSyncMode();
+        if (method_exists($model, 'getPreferredWriteMode')) {
+            $modelMode = $model->getPreferredWriteMode();
             if ($modelMode) {
                 return $modelMode;
             }
         }
 
         // 3. Default from config
-        return config('syncro-sheet.defaults.sync_mode', 'append');
+        return config('syncro-sheet.defaults.export.write_mode', 'append');
     }
 }
