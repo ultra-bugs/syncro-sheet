@@ -309,7 +309,7 @@ class GoogleClient
     }
 
     /**
-     * Generate headers from a SheetSyncable model or data
+     * Generate headers from a SheetExportable model or data
      */
     private function generateHeaders($model = null, array $data = []): array
     {

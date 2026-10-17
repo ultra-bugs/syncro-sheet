@@ -9,8 +9,9 @@ Laravel package for efficient synchronization between your models and Google She
 ## Features
 
 - 🔄 Bidirectional sync between Laravel models and Google Sheets
-  - **Export** (DB → Sheet) via `SheetSyncable`
+  - **Export** (DB → Sheet) via `SheetExportable`
   - **Import** (Sheet → DB) via `SheetImportable`, upsert-by-primary-key
+  - **Bidirectional** model = `SheetSyncable` (extends both of the above)
   - **Two-way reconcile** (`sync()`) — detects which side changed since the last
     sync and propagates it, resolving genuine conflicts by a fixed source-of-truth
 - 📦 Batch processing with memory efficiency
@@ -86,9 +87,9 @@ return [
 ### 1. Make Your Model Sync-able
 
 ```php
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 
-class Product extends Model implements SheetSyncable
+class Product extends Model implements SheetExportable
 {
     public function getSheetIdentifier(): string
     {
@@ -164,17 +165,16 @@ php artisan sheet:sync Product --direction=import --ids=1,2,3
 
 ### 4. Import (Sheet → DB)
 
-Make your model importable by implementing `SheetImportable`. The
-`InteractsWithSheet` trait provides defaults (`getSheetKeyColumn()` returns the
-model key name, `fromSheetRow()` maps headers straight to attributes), so most
-models only need to declare the interface:
+Make your model importable by implementing `SheetImportable` (or `SheetSyncable`
+if it exports too, as below). The `InteractsWithSheet` trait provides defaults
+(`getSheetKeyColumn()` returns the model key name, `fromSheetRow()` maps headers
+straight to attributes), so most models only need to declare the interface:
 
 ```php
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
-use Zuko\SyncroSheet\Contracts\SheetImportable;
+use Zuko\SyncroSheet\Contracts\SheetSyncable; // = SheetExportable + SheetImportable
 use Zuko\SyncroSheet\Traits\InteractsWithSheet;
 
-class Product extends Model implements SheetSyncable, SheetImportable
+class Product extends Model implements SheetSyncable
 {
     use InteractsWithSheet;
 
@@ -207,9 +207,9 @@ $syncState = SyncroSheet::importFull(Product::class);
 $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 ```
 
-> **Primary key is required.** A bidirectional model (one implementing both
-> `SheetSyncable` and `SheetImportable`) must expose its key column in the
-> exported row — the key has to round-trip through the sheet so import can match
+> **Primary key is required.** A bidirectional model (`SheetSyncable`) must
+> expose its key column in the exported row — the key has to round-trip through
+> the sheet so import can match
 > rows back. If `getSheetKeyColumn()` is absent from `toSheetRow()` /
 > `defaultSheetHeaders()`, both `fullSync()` and `importFull()` throw a
 > `SyncException` up front.
@@ -224,8 +224,8 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 
 ### 5. Bidirectional (two-way reconcile)
 
-For a model that implements **both** `SheetSyncable` and `SheetImportable`, a
-single `sync()` call reconciles both directions:
+For a bidirectional model (`SheetSyncable`, i.e. `SheetExportable` +
+`SheetImportable`), a single `sync()` call reconciles both directions:
 
 ```php
 use Zuko\SyncroSheet\Facades\SyncroSheet;
@@ -269,7 +269,7 @@ use Zuko\SyncroSheet\Services\DataTransformer;
 
 class ProductTransformer extends DataTransformer
 {
-    protected function transformRecord(SheetSyncable $record): array
+    protected function transformRecord(SheetExportable $record): array
     {
         return [
             'ID' => $record->id,

@@ -76,12 +76,12 @@ class SheetSyncCommand extends Command
         if (empty($ids)) {
             $this->info("Starting full export for {$modelClass}");
 
-            return $syncManager->fullSync($modelClass, ['sync_mode' => $mode]);
+            return $syncManager->fullSync($modelClass, ['write_mode' => $mode]);
         }
 
         $this->info("Starting partial export for {$modelClass} with IDs: ".implode(', ', $ids));
 
-        return $syncManager->partialSync($modelClass, $ids, ['sync_mode' => $mode]);
+        return $syncManager->partialSync($modelClass, $ids, ['write_mode' => $mode]);
     }
 
     private function runImport(SyncManager $syncManager, string $modelClass, array $ids, ?string $mode)
@@ -89,12 +89,12 @@ class SheetSyncCommand extends Command
         if (empty($ids)) {
             $this->info("Starting full import for {$modelClass}");
 
-            return $syncManager->importFull($modelClass, ['sync_mode' => $mode]);
+            return $syncManager->importFull($modelClass, ['write_mode' => $mode]);
         }
 
         $this->info("Starting partial import for {$modelClass} with IDs: ".implode(', ', $ids));
 
-        return $syncManager->importPartial($modelClass, $ids, ['sync_mode' => $mode]);
+        return $syncManager->importPartial($modelClass, $ids, ['write_mode' => $mode]);
     }
 
     private function runBidirectional(SyncManager $syncManager, string $modelClass, ?string $mode)
@@ -102,6 +102,6 @@ class SheetSyncCommand extends Command
         // Reconcile is always a full pass; --ids is ignored here.
         $this->info("Starting bidirectional sync for {$modelClass}");
 
-        return $syncManager->sync($modelClass, ['sync_mode' => $mode]);
+        return $syncManager->sync($modelClass, ['write_mode' => $mode]);
     }
 }

@@ -19,7 +19,7 @@ namespace Zuko\SyncroSheet\Contracts;
 
 /**
  * Shared contract for any model bound to a Google Sheet, regardless of the
- * sync direction. Both {@see SheetSyncable} (export) and {@see SheetImportable}
+ * sync direction. Both {@see SheetExportable} (export) and {@see SheetImportable}
  * (import) build on top of this.
  */
 interface SheetBound

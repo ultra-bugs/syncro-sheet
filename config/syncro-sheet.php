@@ -23,11 +23,16 @@ return [
     */
     'defaults' => [
         'batch_size' => 100,
-        'sync_mode' => 'append',
-        'direction' => 'export',        // export (DB->Sheet) | import (Sheet->DB) | bidirectional
+        'direction' => 'export',        // data flow: export (DB->Sheet) | import (Sheet->DB) | bidirectional
         'source_of_truth' => 'db',      // db | sheet — winning side on conflict (bidirectional, Phase 2)
         'timeout' => 600,
         'retries' => 3,
+
+        'export' => [
+            // How export writes to the sheet (NOT a direction): append rows, or
+            // clear then write. Only meaningful for the export direction.
+            'write_mode' => 'append',   // append | replace
+        ],
 
         'import' => [
             // true  -> Model::upsert() (one query per chunk, skips model events/mutators)

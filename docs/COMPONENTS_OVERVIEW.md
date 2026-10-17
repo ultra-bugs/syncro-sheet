@@ -5,6 +5,32 @@ Namespace: `Zuko\SyncroSheet`
 Composer package name: `zuko/syncro-sheet`
 Laravel compatible provider: \Zuko\SyncroSheet\LaravelSyncroSheetProvider
 
+# Glossary
+
+Single source of truth for the vocabulary — read this first to avoid mixing up
+the overlapping-sounding terms.
+
+| Term | Kind | Role | Don't confuse with |
+|---|---|---|---|
+| **direction** | config / `sync_states.direction` | Data flow: `export` (DB→Sheet), `import` (Sheet→DB), `bidirectional` | `write_mode` |
+| **write_mode** | config `export.write_mode` / `sync_states.write_mode` | HOW export writes the sheet: `append` or `replace`. Export-only | `direction` |
+| **sync_type** | `sync_states.sync_type` | Scope of a run: `full` or `partial` | direction / write_mode |
+| **source_of_truth** | config / model `getSyncSourceOfTruth()` | Winning side on a reconcile conflict: `db` or `sheet` | — |
+| **SheetBound** | interface | Base: `getSheetIdentifier()`, `getSheetName()` | — |
+| **SheetExportable** | interface | Model can export (`toSheetRow()`) | the old `SheetSyncable` |
+| **SheetImportable** | interface | Model can import (`getSheetKeyColumn()`, `fromSheetRow()`) | — |
+| **SheetSyncable** | interface | **Bidirectional** model — extends both of the above | old meaning (= export) |
+| **Exporter** | service | Engine DB→Sheet (chunked write) | Importer |
+| **Importer** | service | Engine Sheet→DB (chunked upsert by PK) | Exporter |
+| **Reconciler** | service | Two-way engine: `decide()` (read + diff baseline) + `apply()` | Exporter/Importer |
+| **DataTransformer** | service | Value codec both ways + `canonicalHash` (no state, no I/O) | an orchestrator |
+| **StateManager** | service | Owns ALL tracking tables: SyncState + SyncEntry + SyncSnapshot | — |
+| **SyncState** | model | One run: direction, sync_type, write_mode, status, counters | SyncEntry |
+| **SyncEntry** | model | Per-record result within a run (audit/history) | SyncSnapshot |
+| **SyncSnapshot** | model | Current content-hash baseline per record (reconcile) | a per-run log |
+| **GoogleClient** | service | revolution wrapper: read/append/updateRows/headers/clear + rate limit | — |
+| **SyncManager** | service | Orchestrator/entry: fullSync/partialSync, importFull/importPartial, sync | SyncScheduler |
+
 # Component List & Summary
 
 ### 1. Core Components
@@ -17,11 +43,12 @@ Laravel compatible provider: \Zuko\SyncroSheet\LaravelSyncroSheetProvider
 
 #### Sync Contracts (Interfaces)
 - `SheetBound` — shared base: `getSheetIdentifier()`, `getSheetName()`
-- `SheetSyncable extends SheetBound` — export (DB → Sheet): adds `toSheetRow()`
+- `SheetExportable extends SheetBound` — export (DB → Sheet): adds `toSheetRow()`
 - `SheetImportable extends SheetBound` — import (Sheet → DB): adds
   `getSheetKeyColumn()` + `fromSheetRow()`. The `InteractsWithSheet` trait ships
   sensible defaults for both.
-- A two-way model implements both `SheetSyncable` and `SheetImportable`.
+- `SheetSyncable extends SheetExportable, SheetImportable` — **bidirectional**
+  marker; a two-way model implements this one interface.
 ```php
 interface SheetBound
 {
@@ -29,7 +56,7 @@ interface SheetBound
     public function getSheetName(): string;          // Sheet name
 }
 
-interface SheetSyncable extends SheetBound
+interface SheetExportable extends SheetBound
 {
     public function toSheetRow(): array;             // DB -> Sheet row
     // Optional: getBatchSize(): int (defaults to config), defaultSheetHeaders(): array
@@ -40,6 +67,8 @@ interface SheetImportable extends SheetBound
     public function getSheetKeyColumn(): string;     // sheet header mapped to PK
     public function fromSheetRow(array $row): array; // Sheet row -> model attributes
 }
+
+interface SheetSyncable extends SheetExportable, SheetImportable {}  // bidirectional
 ```
 
 ### 2. Data Processing Components
@@ -61,8 +90,7 @@ interface SheetImportable extends SheetBound
 - Public API: `import()` (full), `importPartial()` (specific record IDs)
 
 #### `Reconciler` (Sheet ⇄ DB)
-- Two-way reconcile engine for bidirectional models (implement both
-  `SheetSyncable` + `SheetImportable`)
+- Two-way reconcile engine for bidirectional models (`SheetSyncable`)
 - Matches by primary key; detects which side changed vs. a content-hash
   **baseline**; resolves genuine conflicts by a fixed source-of-truth
   (`getSyncSourceOfTruth()` / `config('syncro-sheet.defaults.source_of_truth')`)
@@ -70,26 +98,23 @@ interface SheetImportable extends SheetBound
   and sheet→DB via upsert; never deletes
 - Public API: `reconcile()` (driven by `SyncManager::sync()`)
 
-#### `SnapshotManager` + `SyncSnapshot` (model)
-- Per-record content-hash baseline in the `sync_snapshots` table
-  (unique `[model_class, record_id]`), used by `Reconciler` to tell which side
-  changed since the last sync
-- `baselineFor()` loads the map, `storeMany()` upserts it after each reconcile
-
-#### `DataTransformer`
-- Converts model data to sheet rows
-- Handles data type conversions
-- Manages date/time formatting
-- Optional custom transformers support
+#### `DataTransformer` (value codec)
+- The single place that converts values **both ways**: model → cell on export
+  (`transformBatch`/`formatRow`/`formatValue`) and cell → model on import (`parseRow`)
+- `canonicalHash()` builds a normalized content hash so the DB side and the sheet
+  side compare on equal footing (reconcile change-detection)
+- Holds no state and does no I/O — the engines call it
 
 ### 3. State Management Components
 
 #### `StateManager`
-- Tracks sync progress and status
-- Manages sync history
-- Provides resume capability
-- Stores performance metrics
-- more sophisticated state tracking system that can handle both full and partial syncs while maintaining the sync history of individual records
+- Owns **all** tracking tables and is the only service that writes them:
+  - `SyncState` — status/history of each run
+  - `SyncEntry` — per-record result within a run
+  - `SyncSnapshot` — current content-hash baseline per record (reconcile)
+- Run lifecycle: `initializeSync()` / `recordBatchSync()` / `completeSync()` / `failSync()`
+- Reconcile baseline: `baselineFor()` loads the map, `storeSnapshots()` upserts it
+  (previously a separate `SnapshotManager`, now merged here)
 
 #### `SyncState` (Model)
 ```php
@@ -100,7 +125,7 @@ class SyncState extends Model
         'model_class',      // Model class name
         'sync_type',        // 'full' or 'partial'
         'direction',        // 'export', 'import' or 'bidirectional'
-        'sync_mode',        // 'append' or 'replace'
+        'write_mode',       // 'append' or 'replace' (export write strategy)
         'status',           // 'running', 'completed', 'failed'
         'started_at',
         'completed_at',

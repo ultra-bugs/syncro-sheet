@@ -18,16 +18,15 @@
 namespace Zuko\SyncroSheet\Tests\Fixtures;
 
 use Illuminate\Database\Eloquent\Model;
-use Zuko\SyncroSheet\Contracts\SheetImportable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Traits\InteractsWithSheet;
 
 /**
- * Misconfigured bidirectional fixture: exportable + importable, but its
- * exported row omits the primary-key column ('id'), so the key cannot
- * round-trip. Used to assert the PK-required guard fires.
+ * Misconfigured bidirectional fixture: SheetSyncable, but its exported row omits
+ * the primary-key column ('id'), so the key cannot round-trip. Used to assert
+ * the PK-required guard fires.
  */
-class TestProductWithoutKey extends Model implements SheetImportable, SheetSyncable
+class TestProductWithoutKey extends Model implements SheetSyncable
 {
     use InteractsWithSheet;
 

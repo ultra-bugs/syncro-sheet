@@ -18,7 +18,7 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Builder;
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 use Zuko\SyncroSheet\Models\SyncState;
 
 /**
@@ -38,15 +38,15 @@ class Exporter
     /**
      * Export a full sync in batches
      */
-    public function export(string $modelClass, SyncState $syncState, ?string $syncMode = null): array
+    public function export(string $modelClass, SyncState $syncState, ?string $writeMode = null): array
     {
         $model = new $modelClass;
         $batchSize = method_exists($model, 'getBatchSize')
             ? $model->getBatchSize()
             : config('syncro-sheet.defaults.batch_size');
-        $syncMode = $syncMode ?? $syncState->sync_mode;
+        $writeMode = $writeMode ?? $syncState->write_mode;
         // Handle replace mode by clearing sheet first
-        if ($syncMode === 'replace') {
+        if ($writeMode === 'replace') {
             $this->googleClient->clearSheet(
                 $model->getSheetIdentifier(),
                 $model->getSheetName()
@@ -173,7 +173,7 @@ class Exporter
             ->orderBy($keyName);
     }
 
-    private function ensureHeaders(SheetSyncable $model): array
+    private function ensureHeaders(SheetExportable $model): array
     {
         // Get current headers from sheet
         $currentHeaders = $this->googleClient->getHeaders(

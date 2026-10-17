@@ -26,7 +26,7 @@ class SyncState extends Model
         'model_class',
         'sync_type',
         'direction',
-        'sync_mode',
+        'write_mode',
         'status',
         'started_at',
         'completed_at',

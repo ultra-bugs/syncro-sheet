@@ -19,8 +19,20 @@ namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 
+/**
+ * Value codec — the single place that converts values between a model and a
+ * sheet cell, in both directions:
+ *
+ * - export (model -> cell): transformBatch(), formatRow(), formatValue()
+ * - import (cell -> model): parseRow()
+ * - reconcile: canonicalHash() builds a normalized content hash so the DB side
+ *   and the sheet side can be compared on equal footing.
+ *
+ * It holds no state and performs no I/O; the engines (Exporter, Importer,
+ * Reconciler) call it.
+ */
 class DataTransformer
 {
     /**
@@ -32,7 +44,7 @@ class DataTransformer
             return [];
         }
 
-        return $records->map(function (SheetSyncable $record) {
+        return $records->map(function (SheetExportable $record) {
             return $this->transformRecord($record);
         })->toArray();
     }
@@ -40,7 +52,7 @@ class DataTransformer
     /**
      * Transform a single record into a sheet row
      */
-    private function transformRecord(SheetSyncable $record): array
+    private function transformRecord(SheetExportable $record): array
     {
         $row = $record->toSheetRow();
 

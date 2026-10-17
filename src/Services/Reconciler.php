@@ -17,14 +17,14 @@
 
 namespace Zuko\SyncroSheet\Services;
 
-use Zuko\SyncroSheet\Contracts\SheetImportable;
+use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\ImportException;
 use Zuko\SyncroSheet\Models\SyncState;
 
 /**
  * Two-way reconcile engine (Sheet <-> DB) for bidirectional models.
  *
- * Uses a per-record content-hash baseline ({@see SnapshotManager}) to decide
+ * Uses a per-record content-hash baseline (via {@see StateManager}) to decide
  * which side actually changed since the last sync; genuine conflicts (both
  * sides changed) are resolved by a fixed source-of-truth. Upsert semantics on
  * the DB side; row-level writes on the sheet side. Nothing is deleted.
@@ -32,7 +32,6 @@ use Zuko\SyncroSheet\Models\SyncState;
 class Reconciler
 {
     public function __construct(
-        private readonly SnapshotManager $snapshots,
         private readonly DataTransformer $transformer,
         private readonly GoogleClient $googleClient,
         private readonly StateManager $stateManager,
@@ -42,7 +41,7 @@ class Reconciler
 
     public function reconcile(string $modelClass, SyncState $syncState): array
     {
-        /** @var SheetImportable $model */
+        /** @var SheetSyncable $model */
         $model = new $modelClass;
 
         $keyColumn = $model->getSheetKeyColumn();
@@ -60,7 +59,7 @@ class Reconciler
         $sheetByPk = $this->readSheet($model, $keyColumn, $headers, $ignore);
         $dbByPk = $this->readDatabase($modelClass, $headers, $ignore);
 
-        $baseline = $this->snapshots->baselineFor($modelClass);
+        $baseline = $this->stateManager->baselineFor($modelClass);
 
         $toImport = [];     // pk => sheet assoc   (sheet wins -> upsert DB)
         $rowUpdates = [];   // rowIndex => values  (db wins, row already in sheet)
@@ -112,7 +111,7 @@ class Reconciler
         $this->applyImports($modelClass, $model, $modelKey, $keyColumn, $toImport);
         $this->applyExports($model, $rowUpdates, $rowAppends);
 
-        $this->snapshots->storeMany($modelClass, $newBaseline);
+        $this->stateManager->storeSnapshots($modelClass, $newBaseline);
 
         if (! empty($processedPks)) {
             $this->stateManager->recordBatchSync($syncState, $processedPks);
@@ -165,7 +164,7 @@ class Reconciler
      *
      * @return array<string, array{rowIndex: int, assoc: array<string, mixed>, hash: string}>
      */
-    private function readSheet(SheetImportable $model, string $keyColumn, array $headers, array $ignore): array
+    private function readSheet(SheetSyncable $model, string $keyColumn, array $headers, array $ignore): array
     {
         $values = $this->googleClient->readSheet(
             $model->getSheetIdentifier(),
@@ -221,7 +220,7 @@ class Reconciler
      */
     private function applyImports(
         string $modelClass,
-        SheetImportable $model,
+        SheetSyncable $model,
         string $modelKey,
         string $keyColumn,
         array $toImport
@@ -240,7 +239,7 @@ class Reconciler
      * @param  array<int, array<int, mixed>>       $rowUpdates  rowIndex => values
      * @param  array<int, array<string, mixed>>    $rowAppends  assoc rows
      */
-    private function applyExports(SheetImportable $model, array $rowUpdates, array $rowAppends): void
+    private function applyExports(SheetSyncable $model, array $rowUpdates, array $rowAppends): void
     {
         if (! empty($rowUpdates)) {
             $this->googleClient->updateRows(
@@ -259,7 +258,7 @@ class Reconciler
         }
     }
 
-    private function resolveHeaders(SheetImportable $model): array
+    private function resolveHeaders(SheetSyncable $model): array
     {
         if (method_exists($model, 'defaultSheetHeaders')) {
             return $model->defaultSheetHeaders();
@@ -268,7 +267,7 @@ class Reconciler
         return array_keys($model->toSheetRow());
     }
 
-    private function resolveHashIgnore(SheetImportable $model): array
+    private function resolveHashIgnore(SheetSyncable $model): array
     {
         if (method_exists($model, 'syncHashIgnore')) {
             return $model->syncHashIgnore();
@@ -277,7 +276,7 @@ class Reconciler
         return config('syncro-sheet.defaults.reconcile.hash_ignore', ['updated_at']);
     }
 
-    private function resolveSourceOfTruth(SheetImportable $model): string
+    private function resolveSourceOfTruth(SheetSyncable $model): string
     {
         $sot = method_exists($model, 'getSyncSourceOfTruth')
             ? $model->getSyncSourceOfTruth()

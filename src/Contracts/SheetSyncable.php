@@ -18,15 +18,12 @@
 namespace Zuko\SyncroSheet\Contracts;
 
 /**
- * Contract for models that can be exported TO a Google Sheet (DB -> Sheet).
+ * Contract for a bidirectional model — one that can both export to and import
+ * from a Google Sheet, and therefore participates in two-way reconcile.
  *
- * The identifier/name methods live on {@see SheetBound} so the import side
- * ({@see SheetImportable}) can share them.
+ * It is a convenience marker: implementing it is the same as implementing both
+ * {@see SheetExportable} and {@see SheetImportable}.
  */
-interface SheetSyncable extends SheetBound
+interface SheetSyncable extends SheetExportable, SheetImportable
 {
-    /**
-     * Transform the model instance to a sheet row
-     */
-    public function toSheetRow(): array;
 }

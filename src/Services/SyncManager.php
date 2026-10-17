@@ -18,14 +18,14 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 use Zuko\SyncroSheet\Contracts\SheetImportable;
-use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\SyncException;
 use Zuko\SyncroSheet\Models\SyncState;
 
 class SyncManager
 {
-    const AVAILABLE_SYNC_MODES = ['append', 'replace'];
+    const AVAILABLE_WRITE_MODES = ['append', 'replace'];
 
     const DIRECTION_EXPORT = 'export';
 
@@ -57,12 +57,12 @@ class SyncManager
     {
         $this->assertBidirectionalPrimaryKey($modelClass);
 
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_EXPORT);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_EXPORT);
         $this->notificationManager->notifyStart($syncState);
 
         try {
-            $result = $this->exporter->export($modelClass, $syncState, $syncMode);
+            $result = $this->exporter->export($modelClass, $syncState, $writeMode);
             $this->stateManager->completeSync($syncState, $result);
             $this->notificationManager->notifyCompletion($syncState);
 
@@ -82,8 +82,8 @@ class SyncManager
         $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting partial sync for {$modelClass}");
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode, self::DIRECTION_EXPORT);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $writeMode, self::DIRECTION_EXPORT);
 
         try {
             $result = $this->exporter->exportPartial($modelClass, $recordIds, $syncState);
@@ -107,8 +107,8 @@ class SyncManager
         $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting full import for {$modelClass}");
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_IMPORT);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_IMPORT);
         $this->notificationManager->notifyStart($syncState);
 
         try {
@@ -134,8 +134,8 @@ class SyncManager
         $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting partial import for {$modelClass}");
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $syncMode, self::DIRECTION_IMPORT);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'partial', $writeMode, self::DIRECTION_IMPORT);
 
         try {
             $result = $this->importer->importPartial($modelClass, $recordIds, $syncState);
@@ -160,8 +160,8 @@ class SyncManager
         $this->assertBidirectionalPrimaryKey($modelClass);
 
         $this->logger->info("Starting bidirectional sync for {$modelClass}");
-        $syncMode = $this->determineSyncMode($modelClass, $options);
-        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $syncMode, self::DIRECTION_BIDIRECTIONAL);
+        $writeMode = $this->determineWriteMode($modelClass, $options);
+        $syncState = $this->stateManager->initializeSync($modelClass, 'full', $writeMode, self::DIRECTION_BIDIRECTIONAL);
         $this->notificationManager->notifyStart($syncState);
 
         try {
@@ -186,8 +186,8 @@ class SyncManager
 
         $model = new $modelClass;
 
-        if (! $model instanceof Model || ! $model instanceof SheetSyncable) {
-            throw new SyncException("Model class {$modelClass} must implement SheetSyncable interface");
+        if (! $model instanceof Model || ! $model instanceof SheetExportable) {
+            throw new SyncException("Model class {$modelClass} must implement SheetExportable interface");
         }
     }
 
@@ -222,7 +222,7 @@ class SyncManager
 
         // Only bidirectional models carry this requirement; single-direction
         // models are governed by their own validation rules.
-        if (! $model instanceof SheetSyncable || ! $model instanceof SheetImportable) {
+        if (! $model instanceof SheetExportable || ! $model instanceof SheetImportable) {
             return;
         }
 
@@ -246,23 +246,23 @@ class SyncManager
         $this->stateManager->failSync($syncState, $e->getMessage());
     }
 
-    private function determineSyncMode(string $modelClass, array $options = []): string
+    private function determineWriteMode(string $modelClass, array $options = []): string
     {
         // 1. Command line option (passed through options)
-        if (! empty($options['sync_mode'])) {
-            return $options['sync_mode'];
+        if (! empty($options['write_mode'])) {
+            return $options['write_mode'];
         }
 
         // 2. Runtime configuration through model instance
         $model = new $modelClass;
-        if (method_exists($model, 'getPreferredSyncMode')) {
-            $modelMode = $model->getPreferredSyncMode();
+        if (method_exists($model, 'getPreferredWriteMode')) {
+            $modelMode = $model->getPreferredWriteMode();
             if ($modelMode) {
                 return $modelMode;
             }
         }
 
         // 3. Default from config
-        return config('syncro-sheet.defaults.sync_mode', 'append');
+        return config('syncro-sheet.defaults.export.write_mode', 'append');
     }
 }

@@ -18,14 +18,13 @@
 namespace Zuko\SyncroSheet\Tests\Fixtures;
 
 use Illuminate\Database\Eloquent\Model;
-use Zuko\SyncroSheet\Contracts\SheetImportable;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Traits\InteractsWithSheet;
 
 /**
- * Two-way fixture model: exportable and importable.
+ * Two-way fixture model: bidirectional (SheetSyncable = exportable + importable).
  */
-class TestProduct extends Model implements SheetImportable, SheetSyncable
+class TestProduct extends Model implements SheetSyncable
 {
     use InteractsWithSheet;
 

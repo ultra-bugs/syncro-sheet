@@ -27,7 +27,7 @@ use Zuko\SyncroSheet\Tests\TestCase;
 
 /**
  * The primary-key column is required for any bidirectional model (one that is
- * both SheetSyncable and SheetImportable), on both the export and import paths.
+ * i.e. SheetSyncable = SheetExportable + SheetImportable), on both the export and import paths.
  */
 class BidirectionalGuardTest extends TestCase
 {
