@@ -1,9 +1,37 @@
 # Component Overview
 
-This document describes the components used in this package. A minimal diagram also provides to illustrate the flow and mind-set at package built-stage.
-Namespace: `Zuko\SyncroSheet`
-Composer package name: `zuko/syncro-sheet`
-Laravel compatible provider: \Zuko\SyncroSheet\LaravelSyncroSheetProvider
+***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
+
+**Last updated:** 2026-10-17 · verified against [`4022c3b`](https://github.com/ultra-bugs/syncro-sheet/commit/4022c3b6832be1437702d570fd04142a2b7cb3b0)
+
+> [!NOTE]
+> Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
+
+- Namespace: `Zuko\SyncroSheet` · Composer: `zuko/syncro-sheet` · Provider: `Zuko\SyncroSheet\LaravelSyncroSheetProvider`
+
+## Color legend
+
+One concept = one color, used consistently across every diagram below.
+
+| Color | Node / area | Concept |
+|---|---|---|
+| blue | SyncManager, SyncScheduler | Orchestrator / dispatcher |
+| green | Exporter, Importer, Reconciler | Sync engines |
+| cyan | StateManager, Database | State / store |
+| purple | DataTransformer | Value codec |
+| orange | — | Sheet I/O flow (read / write) |
+| pink | GoogleClient, Google Sheets API | External boundary |
+| slate | Eloquent Model | Input / trigger |
+
+## Table of Contents
+
+- [Glossary](#glossary)
+- [Component List & Summary](#component-list--summary)
+- [CLI & Jobs → component](#cli--jobs--component)
+- [Component Interactions](#component-interactions)
+- [Flow](#flow)
+- [Lifecycle](#lifecycle)
+- [Caveats / to review](#caveats--to-review)
 
 # Glossary
 
@@ -149,7 +177,8 @@ class SyncEntry extends Model
     protected $casts = [
         'synced_at' => 'datetime'
     ];
-}```
+}
+```
 
 ### 4. Google Sheets Integration
 
@@ -223,31 +252,89 @@ return [
 - `ImportBatchJob` — upsert a chunk of already-read sheet rows (no re-read).
 - `ReconcileApplyJob` — apply a chunk of reconcile decisions from `decide()`.
 
-# Component Interactions
+# CLI & Jobs → component
 
+Surfaces that trigger a sync and the component each one drives.
+
+| Surface | File | Drives |
+|---|---|---|
+| `sheet:sync {model} --direction` | [@SheetSyncCommand.php](../src/Console/Commands/SheetSyncCommand.php) | `SyncManager::fullSync` / `importFull` / `sync` |
+| `sheet:scheduled-sync` | [@ScheduledSyncCommand.php](../src/Console/Commands/ScheduledSyncCommand.php) | `SyncScheduler::run` → driver |
+| `PartialSyncJob` | [@PartialSyncJob.php](../src/Jobs/PartialSyncJob.php) | `SyncManager::partialSync` (export chunk) |
+| `PartialImportJob` | [@PartialImportJob.php](../src/Jobs/PartialImportJob.php) | `SyncManager::importPartial` (import chunk) |
+| `ImportBatchJob` | [@ImportBatchJob.php](../src/Jobs/ImportBatchJob.php) | `Importer::importRows` (queue import) |
+| `ReconcileApplyJob` | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) | `Reconciler::applyChunk` (queue reconcile) |
+
+# Component Interactions
 
 ```mermaid
 graph TB
-    A[SyncManager] --> B[Exporter]
-    A --> B2[Importer]
-    A --> C[StateManager]
-    A --> D[GoogleClient]
+    MDL["Eloquent Model"]
+    DT["DataTransformer"]
+    subgraph Orchestration["Orchestration"]
+        SM["SyncManager"]
+        SCH["SyncScheduler"]
+    end
+    subgraph Engines["Sync engines"]
+        EXP["Exporter"]
+        IMP["Importer"]
+        REC["Reconciler"]
+    end
+    subgraph StateGrp["State & store"]
+        STM["StateManager"]
+        DB[("Database")]
+    end
+    subgraph Ext["Google Sheets"]
+        GC["GoogleClient"]
+        API["Google Sheets API"]
+    end
 
-    B --> E[DataTransformer]
-    B2 --> E
-    B --> D
-    B2 --> D
-    B --> F[SyncLogger]
-    B2 --> F
+    %% 0 input (slate)
+    MDL --> SM
+    %% 1 schedule (blue)
+    SCH -- "dispatch" --> SM
+    %% 2-4 orchestrate engines (blue)
+    SM --> EXP
+    SM --> IMP
+    SM --> REC
+    %% 5-7 value codec (green)
+    EXP --> DT
+    IMP --> DT
+    REC --> DT
+    %% 8-10 sheet I/O (orange)
+    EXP -- "write" --> GC
+    IMP -- "read" --> GC
+    REC -- "read/write" --> GC
+    %% 11 external (pink)
+    GC --> API
+    %% 12 record state (cyan)
+    EXP --> STM
+    %% 13-14 upsert DB (cyan)
+    IMP -- "upsert" --> DB
+    REC -- "upsert" --> DB
 
-    D --> G[Google Sheets API]
-
-    C --> H[Database]
-    B2 --> H
-    F --> I[Log Files]
-
-    J[Model] --> A
-    J --> E
+    classDef orch fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
+    classDef engine fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef codec fill:#ede9fe,stroke:#6d28d9,color:#1e1b4b
+    classDef store fill:#cffafe,stroke:#0e7490,color:#083344
+    classDef ext fill:#fce7f3,stroke:#be185d,color:#500724
+    classDef input fill:#f1f5f9,stroke:#475569,color:#0f172a
+    class SM,SCH orch
+    class EXP,IMP,REC engine
+    class DT codec
+    class STM,DB store
+    class GC,API ext
+    class MDL input
+    style Orchestration fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#0f172a
+    style Engines fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,color:#052e16
+    style StateGrp fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#083344
+    style Ext fill:#fdf2f8,stroke:#ec4899,stroke-width:2px,color:#500724
+    linkStyle 0 stroke:#64748b,stroke-width:1.5px
+    linkStyle 1,2,3,4 stroke:#2563eb,stroke-width:2px
+    linkStyle 5,6,7 stroke:#16a34a,stroke-width:2.5px
+    linkStyle 8,9,10 stroke:#ea580c,stroke-width:2.5px
+    linkStyle 11 stroke:#db2777,stroke-width:2px
+    linkStyle 12,13,14 stroke:#0891b2,stroke-width:2px
 ```
 
 
@@ -257,56 +344,110 @@ graph TB
 
 ```mermaid
 sequenceDiagram
-    participant Command as SyncCommand
-    participant Manager as SyncManager
-    participant Processor as Exporter
-    participant State as StateManager
-    participant Transformer as DataTransformer
-    participant Client as GoogleClient
-
-    Command->>Manager: fullSync(ModelClass)
-    Manager->>State: initializeSync(direction=export)
-    Manager->>Processor: export(ModelClass)
-
-    loop For each chunk
-        Processor->>Transformer: transformBatch(chunk)
-        Transformer-->>Processor: rows
-        Processor->>Client: appendWithHeaders(sheetId, rows)
-        Client-->>Processor: result
-        Processor->>State: recordBatchSync()
+    autonumber
+    box rgba(37,99,235,0.05) Caller
+        participant Command as SyncCommand
+        participant Manager as SyncManager
+    end
+    box rgba(22,163,74,0.05) Engine
+        participant Processor as Exporter
+        participant Transformer as DataTransformer
+    end
+    box rgba(8,145,178,0.05) State
+        participant State as StateManager
+    end
+    box rgba(219,39,119,0.05) Google
+        participant Client as GoogleClient
     end
 
-    Manager->>State: completeSync()
-    Manager-->>Command: SyncState
+    rect rgba(22,163,74,0.16)
+        Note over Command,Client: Export run
+        Command->>Manager: fullSync(ModelClass)
+        Manager->>State: initializeSync(direction=export)
+        Manager->>Processor: export(ModelClass)
+        loop For each chunk
+            Processor->>Transformer: transformBatch(chunk)
+            Transformer-->>Processor: rows
+            Processor->>Client: appendWithHeaders(sheetId, rows)
+            Client-->>Processor: result
+            Processor->>State: recordBatchSync()
+        end
+        Manager->>State: completeSync()
+        Manager-->>Command: SyncState
+    end
 ```
 
 ## Import flow (Sheet → DB)
 
 ```mermaid
 sequenceDiagram
-    participant Command as SyncCommand
-    participant Manager as SyncManager
-    participant Processor as Importer
-    participant Client as GoogleClient
-    participant Transformer as DataTransformer
-    participant State as StateManager
-    participant DB as Database
-
-    Command->>Manager: importFull(ModelClass)
-    Manager->>State: initializeSync(direction=import)
-    Manager->>Processor: import(ModelClass)
-    Processor->>Client: readSheet(sheetId)
-    Client-->>Processor: [headers, ...rows]
-
-    loop For each chunk
-        Processor->>Transformer: parseRow(assoc)
-        Transformer-->>Processor: normalized
-        Note over Processor: model.fromSheetRow() -> attributes
-        Processor->>DB: updateOrCreate(key, attributes)
-        DB-->>Processor: record
-        Processor->>State: recordBatchSync()
+    autonumber
+    box rgba(37,99,235,0.05) Caller
+        participant Command as SyncCommand
+        participant Manager as SyncManager
+    end
+    box rgba(22,163,74,0.05) Engine
+        participant Processor as Importer
+        participant Transformer as DataTransformer
+    end
+    box rgba(219,39,119,0.05) Google
+        participant Client as GoogleClient
+    end
+    box rgba(8,145,178,0.05) State
+        participant State as StateManager
+        participant DB as Database
     end
 
-    Manager->>State: completeSync()
-    Manager-->>Command: SyncState
+    rect rgba(22,163,74,0.16)
+        Note over Command,DB: Import run
+        Command->>Manager: importFull(ModelClass)
+        Manager->>State: initializeSync(direction=import)
+        Manager->>Processor: import(ModelClass)
+        Processor->>Client: readSheet(sheetId)
+        Client-->>Processor: [headers, ...rows]
+        loop For each chunk
+            Processor->>Transformer: parseRow(assoc)
+            Transformer-->>Processor: normalized
+            Note over Processor: model.fromSheetRow() -> attributes
+            Processor->>DB: updateOrCreate(key, attributes)
+            DB-->>Processor: record
+            Processor->>State: recordBatchSync()
+        end
+        Manager->>State: completeSync()
+        Manager-->>Command: SyncState
+    end
 ```
+
+# Lifecycle
+
+A `SyncState` row tracks one run. The code starts it at `running`
+([@StateManager.php](../src/Services/StateManager.php)); the `pending` enum value
+exists in the schema but is currently unused.
+
+```mermaid
+stateDiagram-v2
+    [*] --> running: initializeSync()
+    running --> completed: completeSync()
+    running --> failed: failSync()
+    completed --> [*]
+    failed --> [*]
+
+    classDef active fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#0f172a
+    classDef done fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef bad fill:#fee2e2,stroke:#b91c1c,stroke-width:2px,color:#450a0a
+    class running active
+    class completed done
+    class failed bad
+```
+
+- _blue = running · green = completed · red = failed._
+
+# Caveats / to review
+
+| Marker | Issue | Where |
+|---|---|---|
+| **REVIEW** | Queue export fans out *all* primary keys each run; the "not synced in 7 days" filter is not applied on this path yet. | [@QueueDriver.php](../src/Services/Drivers/QueueDriver.php) |
+| **REVIEW** | Queue reconcile apply jobs do not open a per-chunk `SyncState`, so that path has no per-run audit row. | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) |
+| **REVIEW** | Only numeric primary keys are supported — `sync_entries.record_id` / `sync_snapshots.record_id` are `bigInteger`. | [@create_sync_entries_table.php](../database/migrations/2024_06_01_000001_create_sync_entries_table.php) |
+
+- When docs drift from code, log it centrally at `docs/need-reviews/code-doc-missmatch.md` (repo root) and link here instead of duplicating.

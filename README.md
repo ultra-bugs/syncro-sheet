@@ -1,10 +1,32 @@
-# WIP
-
-This package is not avail on packagist yet. If you interesting, take a local clone or zip download then try it out.
-
 # SyncroSheet
 
-Laravel package for efficient synchronization between your models and Google Sheets with advanced state tracking and error handling.
+***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
+
+**Last updated:** 2026-10-17 · verified against [`4022c3b`](https://github.com/ultra-bugs/syncro-sheet/commit/4022c3b6832be1437702d570fd04142a2b7cb3b0)
+
+> [!IMPORTANT]
+> Available on Packagist — install with `composer require zuko/syncro-sheet`.
+> Export, import, and two-way reconcile are all supported. For how the pieces fit
+> together, read the [architecture overview](docs/COMPONENTS_OVERVIEW.md).
+
+## Documentation
+
+| # | Read | For | Answers |
+|---|---|---|---|
+| 1 | This README | Everyone | Install, configure, day-to-day usage |
+| 2 | [architecture overview](docs/COMPONENTS_OVERVIEW.md) | Developers / contributors | Components, data flow, lifecycle, glossary |
+
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Basic Usage](#basic-usage)
+- [Advanced Usage](#advanced-usage)
+- [Best Practices](#best-practices)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
@@ -74,11 +96,16 @@ If you already set these authorization values. You can leave env untouched.
 
 return [
     'defaults' => [
-        'batch_size' => 1000,
-        'timeout' => 600,
-        'retries' => 3
+        'batch_size'      => 100,
+        'direction'       => 'export',   // export | import | bidirectional
+        'source_of_truth' => 'db',       // db | sheet (conflict winner on reconcile)
+        'timeout'         => 600,
+        'retries'         => 3,
+        'export'          => ['write_mode' => 'append'],      // append | replace
+        'import'          => ['use_batch_upsert' => false],
+        'reconcile'       => ['hash_ignore' => ['updated_at']],
     ],
-    // ... other configurations
+    // 'logging', 'sheets', 'notifications', 'scheduler' — see the published config
 ];
 ```
 
@@ -426,8 +453,8 @@ class SlackSyncNotifier extends Notification
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Pull requests are welcome. For major changes, please open an issue first to discuss what you'd like to change.
 
 ## License
 
-The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+Released under the [MIT License](https://opensource.org/licenses/MIT).
