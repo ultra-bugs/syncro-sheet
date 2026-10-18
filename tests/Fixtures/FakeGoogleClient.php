@@ -28,8 +28,11 @@ class FakeGoogleClient extends GoogleClient
     /** @var array<int, array<int, mixed>> First row is the header row. */
     public array $sheetValues = [];
 
-    /** @var array<int, array<string, mixed>> Rows captured by the exporter. */
+    /** @var array<int, array<int|string, mixed>> Rows captured by appends (lists from appendRows()). */
     public array $appended = [];
+
+    /** @var array<int, int> afterRow argument of each appendRows() call. */
+    public array $appendedAfter = [];
 
     /** @var array<int, string> Headers written via setHeaders(). */
     public array $headersSet = [];
@@ -75,8 +78,29 @@ class FakeGoogleClient extends GoogleClient
         $this->sheetValues = [];
     }
 
+    public function appendRows(string $spreadsheetId, string $sheetName, array $rows, int $afterRow): void
+    {
+        $this->appended = array_merge($this->appended, $rows);
+        $this->appendedAfter[] = $afterRow;
+    }
+
     public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
     {
         $this->updatedByIndex = array_replace($this->updatedByIndex, $rowsByIndex);
+    }
+
+    /**
+     * Appended rows keyed by the header row in use (written or pre-seeded).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function appendedAssoc(): array
+    {
+        $headers = $this->headersSet ?: ($this->sheetValues[0] ?? []);
+
+        return array_map(
+            static fn (array $row) => array_combine($headers, array_pad(array_values($row), count($headers), '')),
+            $this->appended
+        );
     }
 }

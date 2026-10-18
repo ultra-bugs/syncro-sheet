@@ -18,7 +18,6 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Carbon;
 use Zuko\SyncroSheet\Contracts\SheetExportable;
 
 /**
@@ -92,58 +91,116 @@ class DataTransformer
     }
 
     /**
+     * Normalise a row coming from toSheetRow() into header => value.
+     *
+     * A list (positional) row is combined with $headers by position, padded or
+     * truncated to the header count; blank headers only reserve a position and
+     * are dropped. An associative row is returned unchanged.
+     *
+     * @param  array<int|string, mixed>  $row
+     * @param  array<int, string>        $headers
+     * @return array<string, mixed>
+     */
+    public function toAssoc(array $row, array $headers): array
+    {
+        if (! array_is_list($row)) {
+            return $row;
+        }
+
+        $assoc = [];
+        foreach (array_values($headers) as $position => $header) {
+            if ($header !== '' && $header !== null) {
+                $assoc[$header] = $row[$position] ?? null;
+            }
+        }
+
+        return $assoc;
+    }
+
+    /**
      * Produce an ordered list of formatted cell values for the given headers,
      * ready to be written to a sheet row.
      *
-     * @param  array<string, mixed>  $assoc    header => value
-     * @param  array<int, string>    $headers  the column order to emit
-     * @return array<int, string>
+     * @param  array<int|string, mixed>  $row      header => value, or a positional list
+     * @param  array<int, string>        $headers  the column order to emit
+     * @return array<int, string|int|float>
      */
-    public function formatRow(array $assoc, array $headers): array
+    public function formatRow(array $row, array $headers): array
     {
-        $row = [];
+        $assoc = $this->toAssoc($row, $headers);
+
+        $values = [];
         foreach ($headers as $header) {
-            $row[] = $this->formatValue($assoc[$header] ?? null);
+            $values[] = $this->formatValue($header === '' ? null : ($assoc[$header] ?? null));
         }
 
-        return $row;
+        return $values;
     }
 
     /**
      * Build a canonical content hash for one record/row, used by the reconciler
      * to compare the DB side and the sheet side on equal footing.
      *
-     * Both sides run through formatValue() over the same ordered header subset
-     * (minus $ignore), so DB null == sheet '' and DB 10 == sheet '10'.
+     * Both sides run through the same normalisation over the same ordered
+     * header subset (minus $ignore and blank headers): DB null == sheet '',
+     * and numerics compare by value (DB "10.00" == sheet 10 == "10").
      *
-     * @param  array<string, mixed>  $assoc    header => value (DB toSheetRow() or a sheet row)
-     * @param  array<int, string>    $headers  the column set to hash, in order
-     * @param  array<int, string>    $ignore   columns to exclude (e.g. volatile timestamps)
+     * @param  array<int|string, mixed>  $row      header => value (or a positional list)
+     * @param  array<int, string>        $headers  the column set to hash, in order
+     * @param  array<int, string>        $ignore   columns to exclude (e.g. volatile timestamps)
      */
-    public function canonicalHash(array $assoc, array $headers, array $ignore = []): string
+    public function canonicalHash(array $row, array $headers, array $ignore = []): string
     {
+        $assoc = $this->toAssoc($row, $headers);
+
         $canonical = [];
         foreach ($headers as $header) {
-            if (in_array($header, $ignore, true)) {
+            if ($header === '' || in_array($header, $ignore, true)) {
                 continue;
             }
-            $canonical[$header] = $this->formatValue($assoc[$header] ?? null);
+            $canonical[$header] = $this->canonicalValue($assoc[$header] ?? null);
         }
 
         return hash('xxh3', json_encode($canonical));
     }
 
     /**
-     * Format a value for Google Sheets
+     * Comparable string form of a cell value: numerics are reduced to their
+     * shortest decimal form so formatting differences do not count as edits.
      */
-    private function formatValue($value): string
+    private function canonicalValue($value): string
     {
-        if ($value instanceof Carbon) {
+        $value = $this->formatValue($value);
+
+        if (is_string($value) && (! is_numeric($value) || trim($value) !== $value)) {
+            return $value;
+        }
+
+        $number = (float) $value;
+        if (floor($number) === $number && abs($number) < 1e15) {
+            return (string) (int) $number;
+        }
+
+        return rtrim(rtrim(sprintf('%.10F', $number), '0'), '.');
+    }
+
+    /**
+     * Format a value for Google Sheets. Numbers stay numbers so a RAW write
+     * stores a numeric cell (formulas and pivots can aggregate it); everything
+     * else becomes a string.
+     */
+    private function formatValue($value): string|int|float
+    {
+        if ($value instanceof \DateTimeInterface) {
             return $value->format('Y-m-d H:i:s');
         }
 
         if (is_bool($value)) {
             return $value ? 'Yes' : 'No';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return $value;
         }
 
         if (is_array($value) || is_object($value)) {

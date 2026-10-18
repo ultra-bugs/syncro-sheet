@@ -65,6 +65,14 @@ return [
     |--------------------------------------------------------------------------
     */
     'sheets' => [
+        // How cells are read. UNFORMATTED_VALUE returns typed values (numbers
+        // as numbers, no thousands separators / display rounding) so change
+        // detection and imports see the real value; FORMATTED_STRING returns
+        // date cells as displayed instead of serial numbers.
+        'read' => [
+            'value_render_option' => 'UNFORMATTED_VALUE',
+            'date_time_render_option' => 'FORMATTED_STRING',
+        ],
         'cache_ttl' => 3600,
         'rate_limit' => [
             'max_requests' => 100,

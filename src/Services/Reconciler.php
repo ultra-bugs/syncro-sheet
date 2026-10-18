@@ -17,6 +17,8 @@
 
 namespace Zuko\SyncroSheet\Services;
 
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Zuko\SyncroSheet\Contracts\SheetSyncable;
 use Zuko\SyncroSheet\Exceptions\ImportException;
 use Zuko\SyncroSheet\Models\SyncState;
@@ -27,7 +29,8 @@ use Zuko\SyncroSheet\Models\SyncState;
  * Uses a per-record content-hash baseline (via {@see StateManager}) to decide
  * which side actually changed since the last sync; genuine conflicts (both
  * sides changed) are resolved by a fixed source-of-truth. Upsert semantics on
- * the DB side; row-level writes on the sheet side. Nothing is deleted.
+ * the DB side (shared with {@see Importer}); cell-level writes on the sheet
+ * side. Nothing is deleted, and soft-deleted records are left alone.
  */
 class Reconciler
 {
@@ -35,6 +38,7 @@ class Reconciler
         private readonly DataTransformer $transformer,
         private readonly GoogleClient $googleClient,
         private readonly StateManager $stateManager,
+        private readonly Importer $importer,
         private readonly SyncLogger $logger
     ) {
     }
@@ -71,18 +75,17 @@ class Reconciler
      *
      * @return array{decisions: array<int, array{pk: int|string, action: string, payload: array, hash: string}>, seeds: array<int|string, string>}
      *   - decisions: actionable records. action 'import' -> payload {assoc};
-     *     action 'export' -> payload {rowIndex (int|null), values (ordered list)}.
+     *     action 'export' -> payload {rowIndex (int|null), appendAt (int|null),
+     *     values (columnIndex => cell), headers (list|null: bootstrap an empty sheet)}.
      *   - seeds: pk => hash for records that already agree but have no baseline yet.
      */
     public function decide(string $modelClass): array
     {
-        /** @var SheetSyncable $model */
+        /** @var SheetSyncable&Model $model */
         $model = new $modelClass;
 
         $keyColumn = $model->getSheetKeyColumn();
         $headers = $this->resolveHeaders($model);
-        $ignore = $this->resolveHashIgnore($model);
-        $sot = $this->resolveSourceOfTruth($model);
 
         if (! in_array($keyColumn, $headers, true)) {
             throw new ImportException(
@@ -90,56 +93,18 @@ class Reconciler
             );
         }
 
-        $sheetByPk = $this->readSheet($model, $keyColumn, $headers, $ignore);
-        $dbByPk = $this->readDatabase($modelClass, $headers, $ignore);
-        $baseline = $this->stateManager->baselineFor($modelClass);
+        $values = $this->googleClient->readSheet($model->getSheetIdentifier(), $model->getSheetName());
+        $layout = $this->layout($model, $headers, $values[0] ?? [], $keyColumn);
+        $layout['nextRow'] = max(count($values), 1) + 1;
 
-        $decisions = [];
-        $seeds = [];
+        $sides = [
+            'sheet' => $this->readSheet($values, $keyColumn, $layout),
+            'db' => $this->readDatabase($modelClass, $headers, $layout),
+            'base' => $this->stateManager->baselineFor($modelClass),
+            'trashed' => $this->trashedKeys($modelClass),
+        ];
 
-        foreach (array_unique(array_merge(array_keys($dbByPk), array_keys($sheetByPk))) as $pk) {
-            $inDb = isset($dbByPk[$pk]);
-            $inSheet = isset($sheetByPk[$pk]);
-            $base = $baseline[$pk] ?? null;
-
-            $winner = $this->decideWinner(
-                $inDb,
-                $inSheet,
-                $inDb ? $dbByPk[$pk]['hash'] : null,
-                $inSheet ? $sheetByPk[$pk]['hash'] : null,
-                $base,
-                $sot
-            );
-
-            if ($winner === 'none') {
-                if ($base === null) {
-                    $seeds[$pk] = $dbByPk[$pk]['hash'];
-                }
-
-                continue;
-            }
-
-            if ($winner === 'sheet') {
-                $decisions[] = [
-                    'pk' => $pk,
-                    'action' => 'import',
-                    'payload' => ['assoc' => $sheetByPk[$pk]['assoc']],
-                    'hash' => $sheetByPk[$pk]['hash'],
-                ];
-            } else { // db wins
-                $decisions[] = [
-                    'pk' => $pk,
-                    'action' => 'export',
-                    'payload' => [
-                        'rowIndex' => $inSheet ? $sheetByPk[$pk]['rowIndex'] : null,
-                        'values' => $this->transformer->formatRow($dbByPk[$pk]['model']->toSheetRow(), $headers),
-                    ],
-                    'hash' => $dbByPk[$pk]['hash'],
-                ];
-            }
-        }
-
-        return ['decisions' => $decisions, 'seeds' => $seeds];
+        return $this->plan($sides, $headers, $layout, $this->resolveSourceOfTruth($model));
     }
 
     /**
@@ -158,13 +123,9 @@ class Reconciler
 
         /** @var SheetSyncable $model */
         $model = new $modelClass;
-        $modelKey = $model->getKeyName();
-        $keyColumn = $model->getSheetKeyColumn();
-        $headers = $this->resolveHeaders($model);
 
         $toImport = [];
-        $rowUpdates = [];
-        $rowAppends = [];
+        $exports = ['updates' => [], 'appends' => [], 'headers' => null];
         $newBaseline = [];
         $pks = [];
 
@@ -172,69 +133,156 @@ class Reconciler
             $pk = $decision['pk'];
             $pks[] = $pk;
             $newBaseline[$pk] = $decision['hash'];
+            $payload = $decision['payload'];
 
             if ($decision['action'] === 'import') {
-                $toImport[$pk] = $decision['payload']['assoc'];
-            } elseif ($decision['payload']['rowIndex'] !== null) {
-                $rowUpdates[$decision['payload']['rowIndex']] = $decision['payload']['values'];
+                $toImport[$pk] = $payload['assoc'];
+            } elseif (($payload['rowIndex'] ?? null) !== null) {
+                $exports['updates'][$payload['rowIndex']] = $payload['values'];
             } else {
-                $rowAppends[] = array_combine($headers, $decision['payload']['values']);
+                $exports['appends'][$payload['appendAt']] = $payload['values'];
+                $exports['headers'] ??= $payload['headers'] ?? null;
             }
         }
 
-        $this->applyImports($modelClass, $model, $modelKey, $keyColumn, $toImport);
-        $this->applyExports($model, $rowUpdates, $rowAppends);
+        $this->applyImports($modelClass, $toImport);
+        $this->applyExports($model, $exports);
         $this->stateManager->storeSnapshots($modelClass, $newBaseline);
 
         return $pks;
     }
 
     /**
-     * Decide which side wins for a single record.
+     * Resolve where each model column lives on the sheet and which columns
+     * take part in change detection.
      *
-     * @return string 'db' | 'sheet' | 'none'
+     * @return array{columns: array<string, int>, writable: array<string, int>, hash: array<int, string>, headers: array<int, string>|null}
+     *   columns: model header => 0-based sheet column (headers present on both sides);
+     *   writable: the subset written onto an existing row (minus read-only columns);
+     *   hash: the headers compared by canonicalHash();
+     *   headers: the model headers to write first when the sheet is empty.
      */
-    private function decideWinner(
-        bool $inDb,
-        bool $inSheet,
-        ?string $dbHash,
-        ?string $sheetHash,
-        ?string $base,
-        string $sot
-    ): string {
-        if ($inDb && $inSheet) {
-            $dbChanged = $dbHash !== $base;
-            $sheetChanged = $sheetHash !== $base;
+    private function layout(SheetSyncable $model, array $headers, array $sheetHeaders, string $keyColumn): array
+    {
+        $bootstrap = empty($sheetHeaders) ? $headers : null;
+        $source = $bootstrap ?? $sheetHeaders;
 
-            if ($dbChanged && $sheetChanged) {
-                return $sot; // genuine conflict -> source-of-truth decides
-            }
-            if ($dbChanged) {
-                return 'db';
-            }
-            if ($sheetChanged) {
-                return 'sheet';
-            }
-
-            return 'none';
+        if (! in_array($keyColumn, $source, true)) {
+            throw new ImportException(
+                "Sheet is missing the key column [{$keyColumn}] required to reconcile ".get_class($model)
+            );
         }
 
-        // Present on one side only. No-delete policy: re-propagate to the other.
-        return $inDb ? 'db' : 'sheet';
+        $columns = [];
+        foreach ($headers as $header) {
+            $position = $header === '' ? false : array_search($header, $source, true);
+            if ($position !== false) {
+                $columns[$header] = $position;
+            }
+        }
+
+        $readOnly = $this->resolveReadOnly($model);
+        $ignore = array_merge($this->resolveHashIgnore($model), $readOnly);
+
+        return [
+            'columns' => $columns,
+            'writable' => array_diff_key($columns, array_flip($readOnly)),
+            'hash' => array_values(array_diff(array_keys($columns), $ignore)),
+            'headers' => $bootstrap,
+        ];
     }
 
     /**
-     * Read the sheet into a pk => {rowIndex, assoc, hash} map.
+     * Resolve each record into a decision or a baseline seed.
+     *
+     * @param  array{sheet: array, db: array, base: array, trashed: array}  $sides
+     */
+    private function plan(array $sides, array $headers, array $layout, string $sot): array
+    {
+        $decisions = [];
+        $seeds = [];
+        $nextRow = $layout['nextRow'];
+
+        foreach (array_unique(array_merge(array_keys($sides['db']), array_keys($sides['sheet']))) as $pk) {
+            $db = $sides['db'][$pk] ?? null;
+            $sheet = $sides['sheet'][$pk] ?? null;
+
+            if ($db === null && isset($sides['trashed'][$pk])) {
+                continue; // soft-deleted in the DB: leave both sides alone
+            }
+
+            $winner = $this->decideWinner($db['hash'] ?? null, $sheet['hash'] ?? null, $sides['base'][$pk] ?? null, $sot);
+
+            if ($winner === 'none') {
+                if (! isset($sides['base'][$pk]) || $sides['base'][$pk] !== $db['hash']) {
+                    $seeds[$pk] = $db['hash'];
+                }
+            } elseif ($winner === 'sheet') {
+                $decisions[] = ['pk' => $pk, 'action' => 'import', 'payload' => ['assoc' => $sheet['assoc']], 'hash' => $sheet['hash']];
+            } else {
+                $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow);
+                $decisions[] = ['pk' => $pk, 'action' => 'export', 'payload' => $payload, 'hash' => $db['hash']];
+            }
+        }
+
+        return ['decisions' => $decisions, 'seeds' => $seeds];
+    }
+
+    /**
+     * Cells to write for a db-wins record: only the writable columns of an
+     * existing row; every mapped column (plus header bootstrap) for a new row,
+     * which gets the next free row number so queued chunks stay order-free.
+     */
+    private function exportPayload(Model $record, array $headers, array $layout, ?int $rowIndex, int &$nextRow): array
+    {
+        $columns = $rowIndex === null ? $layout['columns'] : $layout['writable'];
+        $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
+        $cells = array_combine(
+            array_values($columns),
+            $this->transformer->formatRow($assoc, array_keys($columns))
+        );
+
+        return [
+            'rowIndex' => $rowIndex,
+            'appendAt' => $rowIndex === null ? $nextRow++ : null,
+            'values' => $cells,
+            'headers' => $rowIndex === null ? $layout['headers'] : null,
+        ];
+    }
+
+    /**
+     * Decide which side wins for a single record (null hash = side missing).
+     *
+     * @return string 'db' | 'sheet' | 'none'
+     */
+    private function decideWinner(?string $dbHash, ?string $sheetHash, ?string $base, string $sot): string
+    {
+        if ($dbHash === null || $sheetHash === null) {
+            // Present on one side only. No-delete policy: re-propagate to the other.
+            return $dbHash !== null ? 'db' : 'sheet';
+        }
+
+        if ($dbHash === $sheetHash) {
+            return 'none'; // both sides agree (also on a first run without baseline)
+        }
+
+        $dbChanged = $dbHash !== $base;
+        $sheetChanged = $sheetHash !== $base;
+
+        if ($dbChanged && $sheetChanged) {
+            return $sot; // genuine conflict -> source-of-truth decides
+        }
+
+        return $dbChanged ? 'db' : 'sheet';
+    }
+
+    /**
+     * Index the sheet rows (header row included in $values) by primary key.
      *
      * @return array<string, array{rowIndex: int, assoc: array<string, mixed>, hash: string}>
      */
-    private function readSheet(SheetSyncable $model, string $keyColumn, array $headers, array $ignore): array
+    private function readSheet(array $values, string $keyColumn, array $layout): array
     {
-        $values = $this->googleClient->readSheet(
-            $model->getSheetIdentifier(),
-            $model->getSheetName()
-        );
-
         $sheetHeaders = array_shift($values);
         if (empty($sheetHeaders) || empty($values)) {
             return [];
@@ -252,7 +300,7 @@ class Reconciler
                 // +2: one for the header row shifted off, one for 1-based rows.
                 'rowIndex' => $offset + 2,
                 'assoc' => $assoc,
-                'hash' => $this->transformer->canonicalHash($assoc, $headers, $ignore),
+                'hash' => $this->transformer->canonicalHash($assoc, $layout['hash']),
             ];
         }
 
@@ -262,15 +310,21 @@ class Reconciler
     /**
      * Read the model table into a pk => {model, hash} map.
      *
-     * @return array<string, array{model: \Illuminate\Database\Eloquent\Model, hash: string}>
+     * @return array<string, array{model: Model, hash: string}>
      */
-    private function readDatabase(string $modelClass, array $headers, array $ignore): array
+    private function readDatabase(string $modelClass, array $headers, array $layout): array
     {
+        $model = new $modelClass;
+        $chunk = method_exists($model, 'getBatchSize') ? $model->getBatchSize() : config('syncro-sheet.defaults.batch_size', 100);
+
+        // lazyById(), not cursor(): it pages with get(), so the model's $with
+        // eager loads apply and toSheetRow() does not trigger N+1 queries.
         $map = [];
-        foreach ($modelClass::query()->cursor() as $record) {
+        foreach ($modelClass::query()->lazyById(max((int) $chunk, 1), $model->getKeyName()) as $record) {
+            $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
             $map[(string) $record->getKey()] = [
                 'model' => $record,
-                'hash' => $this->transformer->canonicalHash($record->toSheetRow(), $headers, $ignore),
+                'hash' => $this->transformer->canonicalHash($assoc, $layout['hash']),
             ];
         }
 
@@ -278,48 +332,72 @@ class Reconciler
     }
 
     /**
+     * Primary keys of soft-deleted records (empty when the model has no soft deletes).
+     *
+     * @return array<string, true>
+     */
+    private function trashedKeys(string $modelClass): array
+    {
+        if (! in_array(SoftDeletes::class, class_uses_recursive($modelClass), true)) {
+            return [];
+        }
+
+        return $modelClass::onlyTrashed()
+            ->pluck((new $modelClass)->getKeyName())
+            ->mapWithKeys(fn ($key) => [(string) $key => true])
+            ->all();
+    }
+
+    /**
      * Upsert the sheet-wins records into the database.
      *
      * @param  array<string, array<string, mixed>>  $toImport  pk => sheet assoc
      */
-    private function applyImports(
-        string $modelClass,
-        SheetSyncable $model,
-        string $modelKey,
-        string $keyColumn,
-        array $toImport
-    ): void {
-        foreach ($toImport as $pk => $assoc) {
-            $attributes = $model->fromSheetRow($this->transformer->parseRow($assoc));
-            unset($attributes[$keyColumn], $attributes[$modelKey]);
+    private function applyImports(string $modelClass, array $toImport): void
+    {
+        if (empty($toImport)) {
+            return;
+        }
 
-            $modelClass::updateOrCreate([$modelKey => $pk], $attributes);
+        foreach ($toImport as $pk => $assoc) {
+            $this->importer->upsertRow($modelClass, $pk, $this->transformer->parseRow($assoc));
+        }
+
+        $this->importer->syncKeySequence($modelClass);
+    }
+
+    /**
+     * Write the db-wins records back onto the sheet: cell-level updates of
+     * existing rows in one batch, then new rows appended after the last row.
+     *
+     * @param  array{updates: array<int, array<int, mixed>>, appends: array<int, array<int, mixed>>, headers: array<int, string>|null}  $exports
+     */
+    private function applyExports(SheetSyncable $model, array $exports): void
+    {
+        $id = $model->getSheetIdentifier();
+        $name = $model->getSheetName();
+
+        if ($exports['headers'] !== null) {
+            $this->googleClient->setHeaders($id, $name, $exports['headers']);
+        }
+
+        if (! empty($exports['updates'])) {
+            $this->googleClient->updateRows($id, $name, $exports['updates']);
+        }
+
+        if (! empty($exports['appends'])) {
+            ksort($exports['appends']);
+            $rows = array_map($this->cellsToList(...), $exports['appends']);
+            $this->googleClient->appendRows($id, $name, array_values($rows), array_key_first($exports['appends']) - 1);
         }
     }
 
     /**
-     * Write the db-wins records back onto the sheet.
-     *
-     * @param  array<int, array<int, mixed>>       $rowUpdates  rowIndex => values
-     * @param  array<int, array<string, mixed>>    $rowAppends  assoc rows
+     * columnIndex => value -> list starting at column A, blanks in the gaps.
      */
-    private function applyExports(SheetSyncable $model, array $rowUpdates, array $rowAppends): void
+    private function cellsToList(array $cells): array
     {
-        if (! empty($rowUpdates)) {
-            $this->googleClient->updateRows(
-                $model->getSheetIdentifier(),
-                $model->getSheetName(),
-                $rowUpdates
-            );
-        }
-
-        if (! empty($rowAppends)) {
-            $this->googleClient->appendWithHeaders(
-                $model->getSheetIdentifier(),
-                $model->getSheetName(),
-                $rowAppends
-            );
-        }
+        return empty($cells) ? [] : array_replace(array_fill(0, max(array_keys($cells)) + 1, ''), $cells);
     }
 
     private function resolveHeaders(SheetSyncable $model): array
@@ -338,6 +416,15 @@ class Reconciler
         }
 
         return config('syncro-sheet.defaults.reconcile.hash_ignore', ['updated_at']);
+    }
+
+    /**
+     * Sheet-managed columns (e.g. formulas): never overwritten on an existing
+     * row, still written on a new row, and excluded from change detection.
+     */
+    private function resolveReadOnly(SheetSyncable $model): array
+    {
+        return method_exists($model, 'syncReadOnlyColumns') ? $model->syncReadOnlyColumns() : [];
     }
 
     private function resolveSourceOfTruth(SheetSyncable $model): string

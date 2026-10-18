@@ -107,10 +107,10 @@ class SchedulerTest extends TestCase
             'syncro-sheet.scheduler.models' => [TestProduct::class => 'both'],
         ]);
 
-        // DB has a record, sheet carries it too: first run (no baseline) => a
+        // DB and sheet disagree on a record: first run (no baseline) => a
         // decision is produced and fanned out as an apply job.
         TestProduct::create(['id' => 1, 'name' => 'A', 'price' => 10]);
-        $this->fakeClient->sheetValues = [['id', 'name', 'price'], ['1', 'A', '10']];
+        $this->fakeClient->sheetValues = [['id', 'name', 'price'], ['1', 'B', '10']];
 
         $this->scheduler()->run();
 

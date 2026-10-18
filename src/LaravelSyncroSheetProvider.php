@@ -20,6 +20,7 @@ namespace Zuko\SyncroSheet;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\ServiceProvider;
+use Revolution\Google\Sheets\SheetsClient;
 use Zuko\SyncroSheet\Services\Exporter;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\Importer;
@@ -70,21 +71,29 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         });
     }
 
+    /**
+     * Locate revolution/laravel-google-sheets' config/google.php from where the
+     * library is actually autoloaded, so it works whether this package lives
+     * in vendor/, a path repository or a git submodule.
+     */
+    private function revolutionConfigPath(): ?string
+    {
+        if (! class_exists(SheetsClient::class)) {
+            return null;
+        }
+
+        $path = dirname((new \ReflectionClass(SheetsClient::class))->getFileName(), 2).'/config/google.php';
+
+        return file_exists($path) ? $path : null;
+    }
+
     public function register()
     {
         $this->mergeConfigFrom(__DIR__.'/../config/syncro-sheet.php',
             'syncro-sheet');
         // Ensure google config is available
-        if (! $this->app->configurationIsCached()) {
-            $revolutionConfig = base_path('vendor/revolution/laravel-google-sheets/config/google.php');
-            if (! file_exists($revolutionConfig)) {
-                $this->mergeConfigFrom(__DIR__.'/../vendor/revolution/laravel-google-sheets/config/google.php',
-                    'google');
-            } else {
-                $this->mergeConfigFrom($revolutionConfig,
-                    'google');
-            }
-
+        if (! $this->app->configurationIsCached() && ($revolutionConfig = $this->revolutionConfigPath()) !== null) {
+            $this->mergeConfigFrom($revolutionConfig, 'google');
         }
         $this->app->singleton(SyncManager::class);
         $this->app->singleton(StateManager::class);

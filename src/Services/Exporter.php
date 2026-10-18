@@ -41,9 +41,6 @@ class Exporter
     public function export(string $modelClass, SyncState $syncState, ?string $writeMode = null): array
     {
         $model = new $modelClass;
-        $batchSize = method_exists($model, 'getBatchSize')
-            ? $model->getBatchSize()
-            : config('syncro-sheet.defaults.batch_size');
         $writeMode = $writeMode ?? $syncState->write_mode;
         // Handle replace mode by clearing sheet first
         if ($writeMode === 'replace') {
@@ -53,27 +50,40 @@ class Exporter
             );
         }
 
-        // First, ensure headers are set up
-        $headers = $this->ensureHeaders($model);
+        return $this->appendRecords($model, $this->buildFullSyncQuery($modelClass, $syncState), $syncState);
+    }
 
-        $query = $this->buildFullSyncQuery($modelClass, $syncState);
+    /**
+     * Export a partial sync for specific records
+     */
+    public function exportPartial(string $modelClass, array $recordIds, SyncState $syncState): array
+    {
+        return $this->appendRecords(new $modelClass, $this->buildPartialSyncQuery($modelClass, $recordIds), $syncState);
+    }
+
+    /**
+     * Append the records of $query in chunks, each value placed under its
+     * header's column on the sheet, after the last row in use.
+     */
+    private function appendRecords(SheetExportable $model, Builder $query, SyncState $syncState): array
+    {
+        $batchSize = method_exists($model, 'getBatchSize')
+            ? $model->getBatchSize()
+            : config('syncro-sheet.defaults.batch_size');
+
+        [$sheetHeaders, $lastRow] = $this->ensureHeaders($model);
+        $modelHeaders = $this->modelHeaders($model);
         $totalProcessed = 0;
         $lastProcessedId = null;
 
-        $query->chunk($batchSize, function ($records) use ($model, $headers, $syncState, &$totalProcessed, &$lastProcessedId) {
-            $rows = $this->transformer->transformBatch($records);
+        // chunkById, not chunk(): every processed batch is recorded in
+        // sync_entries, which the full-sync query filters on, so offset paging
+        // would skip records.
+        $query->chunkById($batchSize, function ($records) use ($model, $sheetHeaders, $modelHeaders, $syncState, &$lastRow, &$totalProcessed, &$lastProcessedId) {
+            $rows = $records->map(fn ($record) => $this->placeOnSheet($record->toSheetRow(), $modelHeaders, $sheetHeaders))->all();
 
-            if (! empty($rows)) {
-                // Transform to associative arrays with headers
-                $rowsWithHeaders = collect($rows)->map(function ($row) use ($headers) {
-                    return array_combine($headers, $row);
-                })->toArray();
-                $this->googleClient->appendWithHeaders(
-                    $model->getSheetIdentifier(),
-                    $model->getSheetName(),
-                    $rowsWithHeaders
-                );
-            }
+            $this->googleClient->appendRows($model->getSheetIdentifier(), $model->getSheetName(), $rows, $lastRow);
+            $lastRow += count($rows);
 
             $processedIds = $records->pluck($model->getKeyName())->toArray();
             $this->stateManager->recordBatchSync($syncState, $processedIds);
@@ -82,12 +92,28 @@ class Exporter
             $lastProcessedId = $records->last()->{$model->getKeyName()};
 
             $this->logger->info("Processed batch of {$records->count()} records for {$syncState->model_class}");
-        });
+        }, $model->getKeyName());
 
         return [
             'total_processed' => $totalProcessed,
             'last_processed_id' => $lastProcessedId,
         ];
+    }
+
+    /**
+     * One toSheetRow() (positional or header-keyed) -> list aligned to the
+     * sheet's header row; columns the model does not know stay blank.
+     *
+     * @return array<int, mixed>
+     */
+    private function placeOnSheet(array $row, array $modelHeaders, array $sheetHeaders): array
+    {
+        $assoc = $this->transformer->toAssoc($row, $modelHeaders);
+
+        return $this->transformer->formatRow($assoc, array_map(
+            static fn ($header) => array_key_exists($header, $assoc) ? $header : '',
+            $sheetHeaders
+        ));
     }
 
     private function getModelAndKeyName($modelClass): array
@@ -97,50 +123,11 @@ class Exporter
         return [$model, $model->getKeyName()];
     }
 
-    /**
-     * Export a partial sync for specific records
-     */
-    public function exportPartial(string $modelClass, array $recordIds, SyncState $syncState): array
+    private function modelHeaders(SheetExportable $model): array
     {
-        $model = new $modelClass;
-        $batchSize = method_exists($model, 'getBatchSize')
-            ? $model->getBatchSize()
-            : config('syncro-sheet.defaults.batch_size');
-
-        $query = $this->buildPartialSyncQuery($modelClass, $recordIds);
-        $totalProcessed = 0;
-        $lastProcessedId = null;
-
-        $query->lazy()->chunk($batchSize)->each(function ($records) use ($model, $syncState, &$totalProcessed, &$lastProcessedId) {
-            if ($records->isEmpty()) {
-                return true;
-            }
-
-            $rows = $this->transformer->transformBatch($records);
-
-            if (! empty($rows)) {
-                $this->googleClient->writeBatch(
-                    $records->first()->getSheetIdentifier(),
-                    $records->first()->getSheetName(),
-                    $rows
-                );
-            }
-
-            $processedIds = $records->pluck($model->getKeyName())->toArray();
-            $this->stateManager->recordBatchSync($syncState, $processedIds);
-
-            $totalProcessed += count($records);
-            $lastProcessedId = $records->last()->{$model->getKeyName()};
-
-            $this->logger->info("Processed partial batch of {$records->count()} records for {$syncState->model_class}");
-
-            return true;
-        });
-
-        return [
-            'total_processed' => $totalProcessed,
-            'last_processed_id' => $lastProcessedId,
-        ];
+        return method_exists($model, 'defaultSheetHeaders')
+            ? $model->defaultSheetHeaders()
+            : array_keys($model->toSheetRow());
     }
 
     private function buildFullSyncQuery(string $modelClass, SyncState $syncState): Builder
@@ -173,22 +160,24 @@ class Exporter
             ->orderBy($keyName);
     }
 
+    /**
+     * Read the sheet once: its header row (written from the model when the
+     * sheet is empty) and the number of the last row in use.
+     *
+     * @return array{0: array<int, string>, 1: int}
+     */
     private function ensureHeaders(SheetExportable $model): array
     {
-        // Get current headers from sheet
-        $currentHeaders = $this->googleClient->getHeaders(
+        $values = $this->googleClient->readSheet(
             $model->getSheetIdentifier(),
             $model->getSheetName()
         );
 
-        if (! empty($currentHeaders)) {
-            return $currentHeaders;
+        if (! empty($values[0])) {
+            return [$values[0], count($values)];
         }
 
-        // Get headers in order of preference
-        $expectedHeaders = method_exists($model, 'defaultSheetHeaders')
-            ? $model->defaultSheetHeaders()
-            : array_keys($model->toSheetRow());
+        $expectedHeaders = $this->modelHeaders($model);
 
         $this->googleClient->setHeaders(
             $model->getSheetIdentifier(),
@@ -196,6 +185,6 @@ class Exporter
             $expectedHeaders
         );
 
-        return $expectedHeaders;
+        return [$expectedHeaders, max(count($values), 1)];
     }
 }

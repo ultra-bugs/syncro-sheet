@@ -55,10 +55,10 @@ class ExporterTest extends TestCase
         // Headers derived from toSheetRow() keys.
         $this->assertSame(['id', 'name', 'price'], $this->fakeClient->headersSet);
 
-        // Both records appended, keyed by header.
+        // Both records appended as rows aligned to the header row.
         $this->assertCount(2, $this->fakeClient->appended);
-        $this->assertSame('A', $this->fakeClient->appended[0]['name']);
-        $this->assertSame('B', $this->fakeClient->appended[1]['name']);
+        $this->assertSame('A', $this->fakeClient->appendedAssoc()[0]['name']);
+        $this->assertSame('B', $this->fakeClient->appendedAssoc()[1]['name']);
 
         $this->assertDatabaseCount('sync_entries', 2);
     }

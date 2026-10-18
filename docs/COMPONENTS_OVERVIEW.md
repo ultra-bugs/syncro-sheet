@@ -182,10 +182,15 @@ class SyncEntry extends Model
 
 ### 4. Google Sheets Integration
 
-#### `SheetClient` (Wrapper around revolution/laravel-google-sheets)
-- Manages Google Sheets connections
-- Handles authentication
-- Provides sheet operations interface
+#### `GoogleClient` (Wrapper around revolution/laravel-google-sheets)
+- Manages Google Sheets connections and authentication (service-account file
+  by absolute or base-relative path)
+- Every call is scoped to a **quoted** sheet name with a fresh range (the
+  underlying client is shared and stateful)
+- `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed)
+- `appendRows()` appends positional rows anchored on `A{lastRow+1}`;
+  `updateRows()` writes sparse cell maps of many rows in one
+  `values.batchUpdate` (adjacent columns grouped into one range)
 - Manages API rate limits
 
 ### 5. Logging & Monitoring
@@ -448,6 +453,7 @@ stateDiagram-v2
 |---|---|---|
 | **REVIEW** | Queue export fans out *all* primary keys each run; the "not synced in 7 days" filter is not applied on this path yet. | [@QueueDriver.php](../src/Services/Drivers/QueueDriver.php) |
 | **REVIEW** | Queue reconcile apply jobs do not open a per-chunk `SyncState`, so that path has no per-run audit row. | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) |
+| **NOTE** | Real-run defects and their fixes (positional rows, append anchoring, typed values, guarded keys, soft deletes, read-only columns) | [@20261018_real-run-fixes.md](agent-plans/20261018_real-run-fixes.md) |
 | **REVIEW** | Only numeric primary keys are supported — `sync_entries.record_id` / `sync_snapshots.record_id` are `bigInteger`. | [@create_sync_entries_table.php](../database/migrations/2024_06_01_000001_create_sync_entries_table.php) |
 
 - When docs drift from code, log it centrally at `docs/need-reviews/code-doc-missmatch.md` (repo root) and link here instead of duplicating.

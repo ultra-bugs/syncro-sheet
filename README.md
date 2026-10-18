@@ -248,6 +248,48 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 > (one query per chunk, skips model events/mutators) for large trusted imports.
 > Models with a non-numeric (UUID/string) primary key are not supported yet
 > (the `sync_entries.record_id` column is a `bigInteger`).
+>
+> - A row whose key is unknown to the DB is created **with that key**, even when
+>   the key is guarded. On PostgreSQL the key sequence is then moved past
+>   `MAX(key)` so later inserts do not collide.
+> - `fromSheetRow()` runs on the target record (the existing one, or a new
+>   instance), so it can merge into attributes it already holds (e.g.
+>   `array_merge($this->metadata ?? [], [...])`).
+> - Soft-deleted records are left alone: never re-created, never updated.
+> - Rows without a key are skipped.
+
+### Sheet layout
+
+`toSheetRow()` may return a **header-keyed** row or a **positional** list. A
+positional row needs `defaultSheetHeaders()`, which names each position (use
+`''` for a column the model does not own):
+
+```php
+public function defaultSheetHeaders(): array
+{
+    return ['Date', 'Site', 'Dep', 'Out', 'Profit', '', 'id']; // '' = not ours
+}
+
+public function toSheetRow(): array
+{
+    return [$this->day, $this->site, (float) $this->dep, (float) $this->out, (float) $this->profit, '', $this->id];
+}
+```
+
+- Values are placed by the **sheet's** header row: column order may differ from
+  the model, and sheet-only columns (and `''` positions) are never written.
+- Return `int`/`float` for numeric cells: values are written `RAW`, so a number
+  stays a numeric cell (formulas and pivots can sum it) while a string — even
+  `"10.00"` — is stored as text. Change detection compares numerics by value.
+- Cells are read typed (`UNFORMATTED_VALUE`, dates as displayed); see
+  `syncro-sheet.sheets.read`.
+- Sheet-managed columns (formulas) go in `syncReadOnlyColumns(): array` — they
+  are written when a row is appended, never overwritten afterwards, and ignored
+  by change detection.
+- New rows are appended after the last row in use, anchored on column A; an
+  empty sheet gets the header row first.
+- Sheet names are always quoted, so tabs named like a cell (`Oct25`, `2025`)
+  are addressed correctly.
 
 ### 5. Bidirectional (two-way reconcile)
 
@@ -283,9 +325,9 @@ How it decides, per record (matched by primary key):
 > excluded via `config('syncro-sheet.defaults.reconcile.hash_ignore')` (default
 > `['updated_at']`); a model can override with `syncHashIgnore(): array`.
 >
-> **First run** (no baseline yet): records present on both sides that differ are
-> treated as conflicts and resolved by the source of truth; the baseline is
-> seeded afterwards.
+> **First run** (no baseline yet): records present on both sides that already
+> agree are only baselined (nothing is written); records that differ are
+> treated as conflicts and resolved by the source of truth.
 
 ### 6. Scheduling / automatic triggering
 

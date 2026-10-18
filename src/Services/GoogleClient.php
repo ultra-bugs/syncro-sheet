@@ -19,6 +19,8 @@ namespace Zuko\SyncroSheet\Services;
 
 use Google\Client as GoogleAPIClient;
 use Google\Service\Sheets as GoogleSheets;
+use Google\Service\Sheets\BatchUpdateValuesRequest;
+use Google\Service\Sheets\ValueRange;
 use Revolution\Google\Sheets\Facades\Sheets;
 use Zuko\SyncroSheet\Exceptions\GoogleSheetsException;
 
@@ -98,8 +100,10 @@ class GoogleClient
             return;
         }
 
-        // Search for the file in multiple locations
+        // Search for the file in multiple locations; an absolute path (the
+        // usual GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION form) is tried as-is first.
         $searchPaths = [
+            $serviceAccountFile,
             base_path($serviceAccountFile),
             resource_path($serviceAccountFile),
             resource_path('credentials'.DIRECTORY_SEPARATOR.$serviceAccountFile),
@@ -140,33 +144,31 @@ class GoogleClient
     }
 
     /**
+     * The (stateful, shared) revolution client scoped to one sheet and range.
+     *
+     * The sheet name is always quoted so names that look like A1 references
+     * ("Oct25", "2025") address the tab, and the range / render options are
+     * reset on every call so state never leaks from a previous operation.
+     */
+    private function scoped(string $spreadsheetId, string $sheetName, string $range = '')
+    {
+        return $this->getClient()
+            ->spreadsheet($spreadsheetId)
+            ->sheet("'".str_replace("'", "''", $sheetName)."'")
+            ->range($range);
+    }
+
+    /**
      * Write a batch of rows to Google Sheets
      */
     public function writeBatch(string $spreadsheetId, string $sheetName, array $rows, $model = null): void
     {
-        $this->checkRateLimit();
-
-        try {
-            $client = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
-
-            // Check if sheet is empty and needs headers
-            $existingData = $client->all();
-            if (empty($existingData)) {
-                // Generate and write headers
-                $headers = $this->generateHeaders($model, $rows);
-                $client->update([$headers]);
-            }
-
-            // Write data
-            $client->append($rows);
-
-            $this->updateRateLimit();
-
-            $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
-        } catch (\Exception $e) {
-            $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
-            throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
+        $existingData = $this->readSheet($spreadsheetId, $sheetName);
+        if (empty($existingData)) {
+            $this->setHeaders($spreadsheetId, $sheetName, $this->generateHeaders($model, $rows));
         }
+
+        $this->appendRows($spreadsheetId, $sheetName, array_map('array_values', $rows), max(count($existingData), 1));
     }
 
     /**
@@ -177,10 +179,7 @@ class GoogleClient
         $this->checkRateLimit();
 
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->clear();
+            $this->scoped($spreadsheetId, $sheetName)->clear();
 
             $this->updateRateLimit();
 
@@ -192,16 +191,19 @@ class GoogleClient
     }
 
     /**
-     * Read all values from a sheet
+     * Read all values from a sheet.
+     *
+     * Values come back typed (numbers as numbers, no display formatting) and
+     * date cells as their formatted string, per `syncro-sheet.sheets.read`.
      */
     public function readSheet(string $spreadsheetId, string $sheetName): array
     {
         $this->checkRateLimit();
 
         try {
-            $values = $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
+            $values = $this->scoped($spreadsheetId, $sheetName)
+                ->valueRenderOption(config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'))
+                ->dateTimeRenderOption(config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'))
                 ->all();
 
             $this->updateRateLimit();
@@ -218,20 +220,10 @@ class GoogleClient
      */
     public function getHeaders(string $spreadsheetId, string $sheetName): array
     {
-        $this->checkRateLimit();
-
         try {
-            $rows = $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->all();
-
-            $this->updateRateLimit();
-
-            return $rows[0] ?? [];
-        } catch (\Exception $e) {
-            $this->logger->error("Failed to get headers: {$e->getMessage()}");
-            throw new GoogleSheetsException("Failed to get headers: {$e->getMessage()}", 0, $e);
+            return $this->readSheet($spreadsheetId, $sheetName)[0] ?? [];
+        } catch (GoogleSheetsException $e) {
+            throw new GoogleSheetsException("Failed to get headers: {$e->getPrevious()?->getMessage()}", 0, $e);
         }
     }
 
@@ -243,10 +235,7 @@ class GoogleClient
         $this->checkRateLimit();
 
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->update([$headers]); // Update first row with headers
+            $this->scoped($spreadsheetId, $sheetName, 'A1')->update([array_values($headers)]);
 
             $this->updateRateLimit();
 
@@ -258,17 +247,52 @@ class GoogleClient
     }
 
     /**
-     * Append rows with headers
+     * Append associative rows (header => value), ordered by the sheet's header
+     * row. Kept for callers that build header-keyed rows; positions are
+     * resolved here instead of by the underlying client, which collapses
+     * blank/duplicate headers.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
      */
     public function appendWithHeaders(string $spreadsheetId, string $sheetName, array $rows): void
     {
+        $values = $this->readSheet($spreadsheetId, $sheetName);
+        $headers = $values[0] ?? array_keys(reset($rows) ?: []);
+
+        $lists = array_map(static function (array $row) use ($headers) {
+            $list = [];
+            foreach ($headers as $position => $header) {
+                $list[$position] = $header === '' ? '' : ($row[$header] ?? '');
+            }
+
+            return $list;
+        }, $rows);
+
+        $this->appendRows($spreadsheetId, $sheetName, $lists, max(count($values), 1));
+    }
+
+    /**
+     * Append positional rows (lists starting at column A) after the given row.
+     *
+     * The append is anchored on the single cell A{afterRow + 1}: anchoring on
+     * the bare sheet name (or a full-width range) lets Google's table detection
+     * start the row at another column when the header row has gaps. A single
+     * empty anchor cell writes there; if a concurrent writer already used that
+     * row, Google appends after it instead of overwriting.
+     *
+     * @param  array<int, array<int, mixed>>  $rows
+     */
+    public function appendRows(string $spreadsheetId, string $sheetName, array $rows, int $afterRow): void
+    {
+        if (empty($rows)) {
+            return;
+        }
+
         $this->checkRateLimit();
 
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->append($rows); // The client will handle header matching
+            $this->scoped($spreadsheetId, $sheetName, 'A'.($afterRow + 1))
+                ->append(array_map('array_values', $rows), 'RAW', 'OVERWRITE');
 
             $this->updateRateLimit();
 
@@ -280,32 +304,84 @@ class GoogleClient
     }
 
     /**
-     * Update specific rows in place, addressed by their 1-based absolute sheet
-     * row index (row 1 is the header). Used by the reconciler to write changed
-     * DB records back onto their existing sheet rows without appending dupes.
+     * Update cells of existing rows, addressed by their 1-based absolute sheet
+     * row index (row 1 is the header), in a single values.batchUpdate call.
      *
-     * @param  array<int, array<int, mixed>>  $rowsByIndex  rowIndex => ordered cell values
+     * Each row's values are keyed by 0-based column index; a list writes from
+     * column A, a sparse map writes only the given columns (contiguous columns
+     * are grouped into one range), leaving every other cell untouched.
+     *
+     * @param  array<int, array<int, mixed>>  $rowsByIndex  rowIndex => [columnIndex => value]
      */
     public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
     {
-        if (empty($rowsByIndex)) {
+        $data = [];
+        $quoted = "'".str_replace("'", "''", $sheetName)."'";
+        foreach ($rowsByIndex as $index => $cells) {
+            foreach ($this->contiguousRuns($cells) as $start => $run) {
+                $end = $start + count($run) - 1;
+                $data[] = new ValueRange([
+                    'range' => $quoted.'!'.self::columnLetter($start).$index.':'.self::columnLetter($end).$index,
+                    'values' => [$run],
+                ]);
+            }
+        }
+
+        if (empty($data)) {
             return;
         }
 
-        try {
-            $sheet = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
+        $this->checkRateLimit();
 
-            foreach ($rowsByIndex as $index => $values) {
-                $this->checkRateLimit();
-                $sheet->range("A{$index}")->update([array_values($values)]);
-                $this->updateRateLimit();
-            }
+        try {
+            $this->getClient()->getService()->spreadsheets_values->batchUpdate(
+                $spreadsheetId,
+                new BatchUpdateValuesRequest(['valueInputOption' => 'RAW', 'data' => $data])
+            );
+            $this->updateRateLimit();
 
             $this->logger->info('Updated '.count($rowsByIndex)." row(s) in sheet {$sheetName}");
         } catch (\Exception $e) {
             $this->logger->error("Failed to update rows in Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to update rows in Google Sheets: {$e->getMessage()}", 0, $e);
         }
+    }
+
+    /**
+     * Split a column-indexed cell map into runs of adjacent columns.
+     *
+     * @param  array<int, mixed>  $cells
+     * @return array<int, array<int, mixed>>  startColumn => values
+     */
+    private function contiguousRuns(array $cells): array
+    {
+        ksort($cells);
+
+        $runs = [];
+        $start = null;
+        $previous = null;
+        foreach ($cells as $column => $value) {
+            if ($start === null || $column !== $previous + 1) {
+                $start = $column;
+            }
+            $runs[$start][] = $value;
+            $previous = $column;
+        }
+
+        return $runs;
+    }
+
+    /**
+     * 0-based column index -> A1 column letters (0 => A, 25 => Z, 26 => AA).
+     */
+    public static function columnLetter(int $index): string
+    {
+        $letter = '';
+        for ($index++; $index > 0; $index = intdiv($index - 1, 26)) {
+            $letter = chr(65 + ($index - 1) % 26).$letter;
+        }
+
+        return $letter;
     }
 
     /**
@@ -329,15 +405,7 @@ class GoogleClient
         // Fallback to Excel notation (A, B, C, ...)
         $columnCount = empty($data) ? 26 : count(reset($data)); // Default to 26 columns if no data
 
-        return array_map(function ($num) {
-            $letter = '';
-            while ($num >= 0) {
-                $letter = chr(($num % 26) + 65).$letter;
-                $num = floor($num / 26) - 1;
-            }
-
-            return $letter;
-        }, range(0, $columnCount - 1));
+        return array_map(static fn (int $index) => self::columnLetter($index), range(0, $columnCount - 1));
     }
 
     /**
