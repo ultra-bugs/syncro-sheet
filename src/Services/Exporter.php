@@ -67,8 +67,7 @@ class Exporter
     /**
      * Append the records of $query in chunks, each value placed under its
      * header's column on the sheet, after the last row in use.
-     */
-    /**
+     *
      * @param  array<string, true>|null  $skip  record keys to leave out (synced recently)
      */
     private function appendRecords(SheetExportable $model, Builder $query, SyncState $syncState, ?array $skip = null): array

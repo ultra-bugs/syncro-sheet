@@ -2,12 +2,13 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-17 · verified against [`4022c3b`](https://github.com/ultra-bugs/syncro-sheet/commit/4022c3b6832be1437702d570fd04142a2b7cb3b0)
+**Last updated:** 2026-10-18 · verified against [`7f9a6dc`](https://github.com/ultra-bugs/syncro-sheet/commit/7f9a6dc442f65ee59193c57a5a722fa2012ab8d5)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
 
 - Namespace: `Zuko\SyncroSheet` · Composer: `zuko/syncro-sheet` · Provider: `Zuko\SyncroSheet\LaravelSyncroSheetProvider`
+- Worked example (a real model on the live API, every component exercised): [real-run example](examples/real-run/README.md)
 
 ## Color legend
 
@@ -76,8 +77,8 @@ the overlapping-sounding terms.
 - `SheetBound` — shared base: `getSheetIdentifier()`, `getSheetName()`
 - `SheetExportable extends SheetBound` — export (DB → Sheet): adds `toSheetRow()`
 - `SheetImportable extends SheetBound` — import (Sheet → DB): adds
-  `getSheetKeyColumn()` + `fromSheetRow()`. The `InteractsWithSheet` trait ships
-  sensible defaults for both.
+  `getSheetKeyColumn()`, `getSheetKeyColumnIndex()` + `fromSheetRow()`. The
+  `InteractsWithSheet` trait ships sensible defaults for all three.
 - `SheetSyncable extends SheetExportable, SheetImportable` — **bidirectional**
   marker; a two-way model implements this one interface.
 ```php
@@ -103,6 +104,19 @@ interface SheetImportable extends SheetBound
 interface SheetSyncable extends SheetExportable, SheetImportable {}  // bidirectional
 ```
 
+Optional model methods — detected with `method_exists()`, so a model only
+declares what it needs:
+
+| Method | Used by | Effect |
+|---|---|---|
+| `getBatchSize(): int` | Exporter, Importer | chunk size (default `defaults.batch_size`) |
+| `defaultSheetHeaders(): array` | all engines | names the positions of a positional `toSheetRow()` (`''` = not ours) |
+| `syncReadOnlyColumns(): array` | Reconciler | written on append only; never overwritten; out of the hash |
+| `syncHashIgnore(): array` | Reconciler | columns left out of change detection (default `reconcile.hash_ignore`) |
+| `getSyncSourceOfTruth(): string` | Reconciler | conflict winner `db` / `sheet` (default `defaults.source_of_truth`) |
+| `shouldImportSheetRow(array $row): bool` | Importer, Reconciler (via `canImportSheetRow()`) | may a row without a key become a record |
+| `sheetTransformer(): DataTransformer\|string` | all engines (via `getSheetTransformer()`) | the model's value codec |
+
 ### 2. Data Processing Components
 
 #### `Exporter` (DB → Sheet)
@@ -115,20 +129,32 @@ interface SheetSyncable extends SheetExportable, SheetImportable {}  // bidirect
 
 #### `Importer` (Sheet → DB)
 - Import engine, symmetric counterpart of `Exporter`
-- Reads the sheet via `GoogleClient::readSheet()`, matches rows to records by a
-  primary-key column (`SheetImportable::getSheetKeyColumn()`)
-- Upsert semantics: `updateOrCreate()` per row (default) or `Model::upsert()`
-  batch (opt-in via `syncro-sheet.defaults.import.use_batch_upsert`); never deletes
-- Public API: `import()` (full), `importPartial()` (specific record IDs)
+- Reads the sheet via `GoogleClient::readSheet()`, matches rows to records by
+  the key cell at `getSheetKeyColumnIndex()` (read by position — the header may
+  be blank)
+- Upsert semantics: `upsertRow()` per row (finds the record, runs
+  `fromSheetRow()` on it, keeps the sheet's key on create even when guarded,
+  moves the PostgreSQL sequence past it; soft-deleted records left alone) or
+  `Model::upsert()` batch (opt-in via `syncro-sheet.defaults.import.use_batch_upsert`);
+  never deletes
+- Rows without a key: `createFromSheetRows()` — gate `canImportSheetRow()`,
+  re-read (`GoogleClient::readRows()`), create + write the key back in one DB
+  transaction
+- Public API: `import()` (full), `importPartial()` (specific record IDs),
+  `importRows()` (already-read rows, queue driver)
 
 #### `Reconciler` (Sheet ⇄ DB)
 - Two-way reconcile engine for bidirectional models (`SheetSyncable`)
 - Matches by primary key; detects which side changed vs. a content-hash
   **baseline**; resolves genuine conflicts by a fixed source-of-truth
   (`getSyncSourceOfTruth()` / `config('syncro-sheet.defaults.source_of_truth')`)
-- Writes DB→sheet via row-level `GoogleClient::updateRows()` (+ append for new),
-  and sheet→DB via upsert; never deletes
-- Public API: `reconcile()` (driven by `SyncManager::sync()`)
+- Plan actions: `export` (update in place / append), `import` (upsert), `create`
+  (sheet row without a key → record + key written back)
+- Writes DB→sheet via sparse `GoogleClient::updateRows()` (one
+  `values.batchUpdate`, read-only columns skipped) + `appendRows()` for new
+  rows, and sheet→DB via `Importer::upsertRow()`; never deletes
+- Public API: `reconcile()` (driven by `SyncManager::sync()`), `decide()` +
+  `applyChunk()` (the queue driver runs them separately)
 
 #### `DataTransformer` (value codec, per model)
 - Resolved per model: `DataTransformer::forModel($model)` → the model's
@@ -194,11 +220,13 @@ class SyncEntry extends Model
   by absolute or base-relative path)
 - Every call is scoped to a **quoted** sheet name with a fresh range (the
   underlying client is shared and stateful)
-- `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed)
+- `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed);
+  `readRows()` re-reads given rows in one `values.batchGet`
 - `appendRows()` appends positional rows anchored on `A{lastRow+1}`;
   `updateRows()` writes sparse cell maps of many rows in one
   `values.batchUpdate` (adjacent columns grouped into one range)
-- Manages API rate limits
+- Client-side throttle (`sheets.rate_limit`, default 60/min) and retry with
+  exponential backoff + jitter on 429 / 5xx (`sheets.retry`)
 
 ### 5. Logging & Monitoring
 
@@ -208,43 +236,31 @@ class SyncEntry extends Model
 - Performance logging
 - Error tracking
 
-#### `Events`
+#### `SyncEvent`
 ```php
-class Events
+class SyncEvent // dispatched by NotificationManager
 {
-    const SYNC_STARTED = 'sheet-sync.started';
-    const CHUNK_PROCESSED = 'sheet-sync.chunk-processed';
-    const SYNC_COMPLETED = 'sheet-sync.completed';
-    const SYNC_FAILED = 'sheet-sync.failed';
+    const SYNC_STARTED = 'sync.started';
+    const CHUNK_PROCESSED = 'sync.chunk_processed';
+    const SYNC_COMPLETED = 'sync.completed';
+    const SYNC_FAILED = 'sync.failed';
 }
 ```
 
 ### 6. Configuration
 
 #### Package Config (`syncro-sheet.php`)
-```php
-return [
-    'defaults' => [
-        'batch_size' => 1000,
-        'timeout' => 600,
-        'retries' => 3
-    ],
 
-    'logging' => [
-        'channel' => 'sheet-sync',
-        'level' => 'info',
-        'separate_files' => true
-    ],
+Top-level keys (defaults in [`config/syncro-sheet.php`](../config/syncro-sheet.php)):
 
-    'sheets' => [
-        'cache_ttl' => 3600,
-        'rate_limit' => [
-            'max_requests' => 100,
-            'per_seconds' => 60
-        ]
-    ]
-];
-```
+| Key | Holds |
+|---|---|
+| `defaults` | `batch_size` 100, `direction`, `source_of_truth`, `timeout`, `retries`, `export.write_mode`, `import.use_batch_upsert`, `reconcile.hash_ignore` |
+| `database` | `connection` / `sqlite_database` — where the tracking tables live (`TrackingDatabase`) |
+| `logging` | `channel` (`sheet-sync`), `level`, `separate_files` |
+| `sheets` | `read` render options, `cache_ttl`, `rate_limit` (60 / 60 s), `retry` (5 times, 2 000 ms base) |
+| `notifications` | channels, `notify_on` |
+| `scheduler` | `enabled`, `driver` (`sync` / `queue`), `frequency`, `models`, `queue` |
 
 ### 7. Scheduling / Trigger Components
 
@@ -305,7 +321,8 @@ graph TB
     end
     subgraph StateGrp["State & store"]
         STM["StateManager"]
-        DB[("Database")]
+        DB[("App database<br/>(records)")]
+        TDB[("Tracking database<br/>(TrackingDatabase)")]
     end
     subgraph Ext["Google Sheets"]
         GC["GoogleClient"]
@@ -335,6 +352,8 @@ graph TB
     %% 13-14 upsert DB (cyan)
     IMP -- "upsert" --> DB
     REC -- "upsert" --> DB
+    %% 15 tracking tables (cyan)
+    STM -- "runs, baselines" --> TDB
 
     classDef orch fill:#dbeafe,stroke:#1d4ed8,color:#0f172a
     classDef engine fill:#dcfce7,stroke:#15803d,color:#052e16
@@ -345,7 +364,7 @@ graph TB
     class SM,SCH orch
     class EXP,IMP,REC engine
     class DT codec
-    class STM,DB store
+    class STM,DB,TDB store
     class GC,API ext
     class MDL input
     style Orchestration fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#0f172a
@@ -357,7 +376,7 @@ graph TB
     linkStyle 5,6,7 stroke:#16a34a,stroke-width:2.5px
     linkStyle 8,9,10 stroke:#ea580c,stroke-width:2.5px
     linkStyle 11 stroke:#db2777,stroke-width:2px
-    linkStyle 12,13,14 stroke:#0891b2,stroke-width:2px
+    linkStyle 12,13,14,15 stroke:#0891b2,stroke-width:2px
 ```
 
 
@@ -388,10 +407,11 @@ sequenceDiagram
         Command->>Manager: fullSync(ModelClass)
         Manager->>State: initializeSync(direction=export)
         Manager->>Processor: export(ModelClass)
-        loop For each chunk
-            Processor->>Transformer: transformBatch(chunk)
-            Transformer-->>Processor: rows
-            Processor->>Client: appendWithHeaders(sheetId, rows)
+        Processor->>Client: readSheet(): header row + last row<br/>(setHeaders() when the sheet is empty)
+        loop For each chunk (chunkById)
+            Processor->>Transformer: recordToAssoc() + formatRow() (model's codec)
+            Transformer-->>Processor: rows placed by sheet header
+            Processor->>Client: appendRows(sheetId, rows, lastRow)
             Client-->>Processor: result
             Processor->>State: recordBatchSync()
         end
@@ -431,9 +451,10 @@ sequenceDiagram
         loop For each chunk
             Processor->>Transformer: parseRow(assoc)
             Transformer-->>Processor: normalized
-            Note over Processor: model.fromSheetRow() -> attributes
-            Processor->>DB: updateOrCreate(key, attributes)
+            Note over Processor: key cell read by position<br/>record.fromSheetRow() -> attributes
+            Processor->>DB: upsertRow(key, assoc)
             DB-->>Processor: record
+            Note over Processor,DB: keyless rows: gate, re-read,<br/>create + key write-back (one transaction)
             Processor->>State: recordBatchSync()
         end
         Manager->>State: completeSync()
@@ -471,6 +492,7 @@ stateDiagram-v2
 |---|---|---|
 | **REVIEW** | Queue export fans out *all* primary keys each run; the "not synced in 7 days" filter is not applied on this path yet. | [@QueueDriver.php](../src/Services/Drivers/QueueDriver.php) |
 | **REVIEW** | Queue reconcile apply jobs do not open a per-chunk `SyncState`, so that path has no per-run audit row. | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) |
+| **NOTE** | Worked example: a real model synced both ways on the live API, 17 scenarios, results per round, pitfalls | [@real-run example](examples/real-run/README.md) |
 | **NOTE** | Model hooks (import gate, per-model transformer) + tracking connection | [@20261018_model-hooks-and-tracking-connection.md](agent-plans/20261018_model-hooks-and-tracking-connection.md) |
 | **NOTE** | Key by column index; rows without a key are created and get their key written back | [@20261018_sheet-key-column-index.md](agent-plans/20261018_sheet-key-column-index.md) |
 | **NOTE** | Real-run defects and their fixes (positional rows, append anchoring, typed values, guarded keys, soft deletes, read-only columns) | [@20261018_real-run-fixes.md](agent-plans/20261018_real-run-fixes.md) |

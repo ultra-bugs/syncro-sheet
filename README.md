@@ -2,12 +2,13 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-17 · verified against [`4022c3b`](https://github.com/ultra-bugs/syncro-sheet/commit/4022c3b6832be1437702d570fd04142a2b7cb3b0)
+**Last updated:** 2026-10-18 · verified against [`7f9a6dc`](https://github.com/ultra-bugs/syncro-sheet/commit/7f9a6dc442f65ee59193c57a5a722fa2012ab8d5)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
 > Export, import, and two-way reconcile are all supported. For how the pieces fit
-> together, read the [architecture overview](docs/COMPONENTS_OVERVIEW.md).
+> together, read the [architecture overview](docs/COMPONENTS_OVERVIEW.md); for a
+> complete model on a real sheet, read the [real-run example](docs/examples/real-run/README.md).
 
 ## Documentation
 
@@ -15,6 +16,8 @@
 |---|---|---|---|
 | 1 | This README | Everyone | Install, configure, day-to-day usage |
 | 2 | [architecture overview](docs/COMPONENTS_OVERVIEW.md) | Developers / contributors | Components, data flow, lifecycle, glossary |
+| 3 | [real-run example](docs/examples/real-run/README.md) | Anyone wiring a real sheet | A ledger synced both ways on the live API: model contract, scenarios, results, pitfalls, runnable harness |
+| 4 | [`docs/agent-plans/`](docs/agent-plans/) | Contributors | Dated design records of each change |
 
 ## Table of Contents
 
@@ -37,6 +40,16 @@
   - **Bidirectional** model = `SheetSyncable` (extends both of the above)
   - **Two-way reconcile** (`sync()`) — detects which side changed since the last
     sync and propagates it, resolving genuine conflicts by a fixed source-of-truth
+- 🔑 Key by column position — the id column may have no header; rows typed on
+  the sheet are created and get their new key written back
+- 🧩 Model hooks: import gate for those rows (`shouldImportSheetRow()`), a
+  per-model `DataTransformer` (`sheetTransformer()`), read-only (formula)
+  columns, hash-ignored columns
+- 🔢 Typed cells: numbers stay numbers, formulas and sheet-only columns survive
+- 🗄️ Tracking tables kept apart from your data (own SQLite file by default)
+- 🚦 Quota-aware: client-side throttle + retry with backoff on 429 / 5xx
+- ✅ Verified end-to-end on the live API + PostgreSQL —
+  [real-run example](docs/examples/real-run/README.md)
 - 📦 Batch processing with memory efficiency
 - 🎯 Support for both full and partial syncs
 - 💾 Sophisticated state tracking and resume capability
@@ -48,8 +61,12 @@
 ## Requirements
 
 - PHP `>= 8.1`
-- Laravel `>= 10`
-- Google API accessible
+- Laravel `>= 10` (`illuminate/database >= 10`)
+- `revolution/laravel-google-sheets >= 6.0` (installed as a dependency)
+- `pdo_sqlite` recommended — the tracking tables get their own SQLite file
+  (without it they go to your default connection, see
+  [Tracking database](#tracking-database))
+- Google Sheets API enabled for your credentials
 
 ## Installation
 
@@ -57,15 +74,18 @@
 composer require zuko/syncro-sheet
 ```
 
-Publish the configuration and migrations:
+Publish the configuration (optional — the defaults are merged automatically):
 
 ```bash
-php artisan vendor:publish --provider="Zuko\SyncroSheet\LaravelSyncroSheetProvider"
+php artisan vendor:publish --provider="Zuko\SyncroSheet\LaravelSyncroSheetProvider" --tag=config
 php artisan migrate
 ```
 
-> By default the tracking tables go to the package's own SQLite file, created
-> on first boot — see [Tracking database](#tracking-database).
+> Migrations are not published: by default the tracking tables go to the
+> package's own SQLite file, created on first boot; with
+> `SYNCRO_SHEET_DB_CONNECTION` set (or without `pdo_sqlite`) the package's
+> migrations run with your `php artisan migrate` — see
+> [Tracking database](#tracking-database).
 
 ## Configuration
 
@@ -194,10 +214,9 @@ $syncState = SyncroSheet::fullSync(Product::class);
 
 // Partial sync
 $syncState = SyncroSheet::partialSync(Product::class, [1, 2, 3]);
-
-// Get last sync state
-$lastSync = SyncroSheet::getLastSync(Product::class);
 ```
+
+Run history lives in `SyncState` — see [State Management](#4-state-management).
 
 ### 3. Artisan Commands
 
@@ -519,7 +538,8 @@ $syncHistory = \Zuko\SyncroSheet\Models\SyncState::where('model_class', Product:
 ### 5. Error Handling
 
 ```php
-use Zuko\SyncroSheet\Services\ErrorHandler;
+use Zuko\SyncroSheet\Exceptions\GoogleSheetsException;
+use Zuko\SyncroSheet\Exceptions\SyncException;
 
 try {
     $syncManager->fullSync(Product::class);
@@ -540,18 +560,34 @@ public function getBatchSize(): int
 }
 ```
 
-2. **Rate Limiting**: Configure based on your Google Sheets API quotas
+2. **Rate Limiting**: Configure based on your Google Sheets API quotas (Google's
+   default is 60 requests/min/user, shared by everything using the same
+   credentials)
 ```php
 // config/syncro-sheet.php
 'sheets' => [
     'rate_limit' => [
-        'max_requests' => 100,
-        'per_seconds' => 60
-    ]
-]
+        'max_requests' => 60,
+        'per_seconds' => 60,
+    ],
+    'retry' => [            // 429 / 5xx: exponential backoff + jitter
+        'times' => 5,
+        'base_delay_ms' => 2000,
+    ],
+],
 ```
 
-3. **Error Handling**: Implement custom notification channels
+3. **One writer per tab**: do not let another process (an observer pushing
+   rows, a script) write the same tab while a two-way sync runs. List every
+   formula column in `syncReadOnlyColumns()` — other columns are rewritten
+   from the DB when a row is written back.
+
+4. **Verify on your own sheet**: the [real-run harness](docs/examples/real-run/README.md)
+   can be adapted to your model; each scenario edits one side, syncs, checks
+   both sides through an independent client, then expects the next run to
+   process 0.
+
+5. **Error Handling**: Implement custom notification channels
 ```php
 use Zuko\SyncroSheet\Notifications\SyncFailedNotification;
 

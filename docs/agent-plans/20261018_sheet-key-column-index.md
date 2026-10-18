@@ -50,7 +50,7 @@ sequenceDiagram
     else attributes
         R->>G: readRows(candidate rows)
         Note over R: row changed / moved since the read → skipped,<br/>retried next run
-        R->>DB: BEGIN; create record
+        R->>DB: BEGIN, create record
         R->>G: write the new id into (rowIndex, keyIndex)<br/>(reconcile: the whole writable row)
         R->>DB: COMMIT (rollback when the write fails → no orphan record)
     end

@@ -26,7 +26,6 @@ use Zuko\SyncroSheet\Services\SyncManager;
  * @method static \Zuko\SyncroSheet\Models\SyncState importFull(string $modelClass, array $options = [])
  * @method static \Zuko\SyncroSheet\Models\SyncState importPartial(string $modelClass, array $recordIds, array $options = [])
  * @method static \Zuko\SyncroSheet\Models\SyncState sync(string $modelClass, array $options = [])
- * @method static \Zuko\SyncroSheet\Models\SyncState|null getLastSync(string $modelClass)
  *
  * @see \Zuko\SyncroSheet\Services\SyncManager
  */

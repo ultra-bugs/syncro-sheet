@@ -72,4 +72,5 @@ flowchart TB
 One PHPUnit test per defect in `tests/Feature/RealRunRegressionTest.php`
 (positional model fixture with a guarded key and soft deletes), plus the
 existing suite adapted to the list-based writes. The end-to-end real-run
-harness lives in the consuming app (Fitly) and is not part of this package.
+harness is published as a worked example in
+[`docs/examples/real-run/`](../examples/real-run/README.md).
