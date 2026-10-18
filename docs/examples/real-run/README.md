@@ -335,6 +335,7 @@ notes are in the linked plan docs.
 | copy of the production tab, after round 9 | First run on 5 548 rows: re-reading the 4 102 created rows in one `values.batchGet` → 413 | rows re-read in spans, ≤ 100 per request ([production tab rehearsal](../../agent-plans/20261018_production-tab-rehearsal.md)) |
 | copy of the production tab, after round 9 | The create write-back rewrote whole rows with the normalised record (4 206 cells: formulas → values, `0` → blank, milliseconds, trailing spaces, a default site) | only the key is written; a baseline per side (`sheet_hash`) |
 | copy of the production tab, after round 10 | An app edit rewrote every writable cell of its row: `=50+20` in `Dep` became `70`, `Date_Converted` lost `.000` | in-place exports write only cells whose value changed; the model writes `Date_Converted` as the ledger does (`Y-m-d H:i:s.v`) |
+| host, first run of the production tab | 600 s job timeout inside the creates: `fresh()` + eager loads per created record (17k queries over a remote DB), one transaction for every create, so no progress kept | created records reloaded in one query (4 743 queries); creates committed per chunk of 500 with their ids and baselines ([first run at scale](../../agent-plans/20261018_first-run-at-scale.md)) |
 | admin panel, after round 8 | Without `GOOGLE_SERVICE_ENABLED` the client called a missing `TokenManager::getToken()`; the `\Error` escaped `catch (\Exception)`, and failed full / import / two-way runs were never marked failed → run stuck at `running`, 0 records | `\Throwable` caught, run always marked failed, dead-worker runs ended by the next run, clear "no credentials" error, `syncro-sheet.google.credentials` ([failed runs + credentials](../../agent-plans/20261018_failed-runs-and-credentials.md)) |
 
 ## 8. Results
@@ -350,6 +351,7 @@ notes are in the linked plan docs.
 | 10 | `638897e` per-side baselines, key-only write-back, `readRows()` in spans | 48 | 0 |
 | 11 | `a046c9e` cell-level in-place exports, preview | 48 | 0 |
 | 12 | `2eb4579` credentials through `configureUsing()` only | 48 | 0 |
+| 13 | `92ffcf4` one reload per chunk, creates committed per chunk | 48 | 0 |
 
 In rounds 4–7 the single failure was an app check (S15). It exercised the
 app's own legacy observer push, which writes invalid tracking rows. That
@@ -374,7 +376,7 @@ the full history):
 | | Result |
 |---|---|
 | preview (`SyncManager::preview()`) | `create 4102, append 0`; with the old records still in the DB: `create 4102, append 3782` (would duplicate the history) |
-| first run | 4 102 records created in 30 s on PGlite (160 s before the app memoised account lookups per run) |
+| first run | 4 102 records created in 20 s on PGlite, 4 743 queries (before: 30 s and 17 009 queries with `fresh()` per record; 160 s before the app memoised account lookups per run) |
 | cells changed on the copy | 4 102, all in X (the ids) |
 | rows left without an id | 1 033 day labels / totals / blanks, 135 without an amount, 50 without a valid date, 227 whose account is unknown |
 | second run | 0 processed, 2.3 s |

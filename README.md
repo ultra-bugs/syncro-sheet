@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`2eb4579`](https://github.com/ultra-bugs/syncro-sheet/commit/2eb457972efbeb7d6fc0578b096ac9c8ac990d88)
+**Last updated:** 2026-10-18 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -148,6 +148,13 @@ worker: it keeps the config and code it booted with, so run
 log names the source each process used:
 `Google client: credentials from configureUsing()`.
 
+A run on a queue is bounded by `defaults.timeout` (`SYNCRO_SHEET_TIMEOUT`,
+600 s). Keep the queue connection's `retry_after` longer than that (e.g.
+`REDIS_QUEUE_RETRY_AFTER=900`), or the queue hands the job out again while it
+still runs. The first run of a large tab spends most of its time inserting
+records, one query each: on a remote database, raise the timeout, or let it
+time out and run it again. Finished chunks are kept.
+
 ### Package Configuration
 
 ```php
@@ -158,11 +165,11 @@ return [
         'batch_size'      => 100,
         'direction'       => 'export',   // export | import | bidirectional
         'source_of_truth' => 'db',       // db | sheet (conflict winner on reconcile)
-        'timeout'         => 600,
+        'timeout'         => 600,        // SYNCRO_SHEET_TIMEOUT; a queue's retry_after must be longer
         'retries'         => 3,
         'export'          => ['write_mode' => 'append'],      // append | replace
         'import'          => ['use_batch_upsert' => false],
-        'reconcile'       => ['hash_ignore' => ['updated_at']],
+        'reconcile'       => ['hash_ignore' => ['updated_at'], 'create_chunk' => 500],
     ],
     'database' => [
         'connection'      => env('SYNCRO_SHEET_DB_CONNECTION'),   // null = own SQLite file (see below)
@@ -354,8 +361,11 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 >   separators, totals and blank lines answer `false`); a row whose
 >   `fromSheetRow()` is `[]` is never created either. Rows are re-read right
 >   before the key is written: one that was edited or moved meanwhile (a row
->   inserted above) waits for the next run. Creates and the write-back share a
->   DB transaction, so a failed sheet write leaves no record behind.
+>   inserted above) waits for the next run. Rows go in chunks of
+>   `defaults.reconcile.create_chunk` (500). Each chunk's creates, key
+>   write-back and baselines share one DB transaction, so a failed sheet write
+>   leaves no record behind. A run cut short (time limit, crash) keeps the
+>   chunks it finished, and the next run creates the rest.
 
 ### Sheet layout
 

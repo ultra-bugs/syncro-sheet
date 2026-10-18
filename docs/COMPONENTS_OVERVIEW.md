@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`2eb4579`](https://github.com/ultra-bugs/syncro-sheet/commit/2eb457972efbeb7d6fc0578b096ac9c8ac990d88)
+**Last updated:** 2026-10-18 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -137,9 +137,11 @@ declares what it needs:
   moves the PostgreSQL sequence past it; soft-deleted records left alone) or
   `Model::upsert()` batch (opt-in via `syncro-sheet.defaults.import.use_batch_upsert`);
   never deletes
-- Rows without a key: `createFromSheetRows()` — gate `canImportSheetRow()`,
-  re-read (`GoogleClient::readRows()`), create + write the key back in one DB
-  transaction
+- Rows without a key: `createFromSheetRows()` — gate `canImportSheetRow()` and
+  attributes once per row, re-read (`GoogleClient::readRows()`), create + write
+  the key back in one DB transaction (the Reconciler calls it per chunk of
+  `reconcile.create_chunk`, reloads the created records in one query and
+  stores their baselines in the same transaction)
 - Public API: `import()` (full), `importPartial()` (specific record IDs),
   `importRows()` (already-read rows, queue driver)
 
@@ -183,7 +185,9 @@ declares what it needs:
     (DB side), `sheet_hash` (sheet side; null = same as `content_hash`)
 - Run lifecycle: `initializeSync()` / `recordBatchSync()` / `completeSync()` / `failSync()`
 - `failAbandonedRuns()` (called by `initializeSync()`): the model's runs still
-  `running` past `defaults.timeout` + 60 s are marked failed (`Abandoned: …`)
+  `running` past `defaults.timeout` + 60 s are marked failed (`Abandoned: …`);
+  `failRunningRuns()` ends them now (a queue job's `failed()` on timeout)
+- Tracking inserts go in batches of 500 rows (SQLite's bound-parameter limit)
 - Reconcile baseline: `baselineFor()` loads the map, `storeSnapshots()` upserts it
   (previously a separate `SnapshotManager`, now merged here)
 
@@ -273,7 +277,7 @@ Top-level keys (defaults in [`config/syncro-sheet.php`](../config/syncro-sheet.p
 
 | Key | Holds |
 |---|---|
-| `defaults` | `batch_size` 100, `direction`, `source_of_truth`, `timeout`, `retries`, `export.write_mode`, `import.use_batch_upsert`, `reconcile.hash_ignore` |
+| `defaults` | `batch_size` 100, `direction`, `source_of_truth`, `timeout` (`SYNCRO_SHEET_TIMEOUT`), `retries`, `export.write_mode`, `import.use_batch_upsert`, `reconcile.hash_ignore`, `reconcile.create_chunk` 500 |
 | `database` | `connection` / `sqlite_database` — where the tracking tables live (`TrackingDatabase`) |
 | `google` | `credentials` — service account for the package's client (path, JSON or array; null = `google.service.*`, then OAuth). Code: `SyncManager::configureUsing()` |
 | `logging` | `channel` (`sheet-sync`), `level`, `separate_files` |
