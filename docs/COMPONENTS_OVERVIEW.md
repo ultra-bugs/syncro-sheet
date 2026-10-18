@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`7f9a6dc`](https://github.com/ultra-bugs/syncro-sheet/commit/7f9a6dc442f65ee59193c57a5a722fa2012ab8d5)
+**Last updated:** 2026-10-18 · verified against [`5db9bd7`](https://github.com/ultra-bugs/syncro-sheet/commit/5db9bd794ff8ba78fa0096a8ca1dab7fbd557b80)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -174,6 +174,8 @@ declares what it needs:
   - `SyncEntry` — per-record result within a run
   - `SyncSnapshot` — current content-hash baseline per record (reconcile)
 - Run lifecycle: `initializeSync()` / `recordBatchSync()` / `completeSync()` / `failSync()`
+- `failAbandonedRuns()` (called by `initializeSync()`): the model's runs still
+  `running` past `defaults.timeout` + 60 s are marked failed (`Abandoned: …`)
 - Reconcile baseline: `baselineFor()` loads the map, `storeSnapshots()` upserts it
   (previously a separate `SnapshotManager`, now merged here)
 
@@ -216,8 +218,10 @@ class SyncEntry extends Model
 ### 4. Google Sheets Integration
 
 #### `GoogleClient` (Wrapper around revolution/laravel-google-sheets)
-- Manages Google Sheets connections and authentication (service-account file
-  by absolute or base-relative path)
+- Manages Google Sheets connections and authentication, first match wins:
+  `syncro-sheet.google.credentials` (path or array, package only) →
+  `google.service.*` when `GOOGLE_SERVICE_ENABLED` → OAuth (token from
+  `TokenManager::getToken()`); none → `GoogleSheetsException` on the first call
 - Every call is scoped to a **quoted** sheet name with a fresh range (the
   underlying client is shared and stateful)
 - `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed);
@@ -257,6 +261,7 @@ Top-level keys (defaults in [`config/syncro-sheet.php`](../config/syncro-sheet.p
 |---|---|
 | `defaults` | `batch_size` 100, `direction`, `source_of_truth`, `timeout`, `retries`, `export.write_mode`, `import.use_batch_upsert`, `reconcile.hash_ignore` |
 | `database` | `connection` / `sqlite_database` — where the tracking tables live (`TrackingDatabase`) |
+| `google` | `credentials` — service account for the package's client (path or array; null = `google.service.*`, then OAuth) |
 | `logging` | `channel` (`sheet-sync`), `level`, `separate_files` |
 | `sheets` | `read` render options, `cache_ttl`, `rate_limit` (60 / 60 s), `retry` (5 times, 2 000 ms base) |
 | `notifications` | channels, `notify_on` |
@@ -472,7 +477,7 @@ exists in the schema but is currently unused.
 stateDiagram-v2
     [*] --> running: initializeSync()
     running --> completed: completeSync()
-    running --> failed: failSync()
+    running --> failed: failSync() — any Throwable, or abandoned (next run)
     completed --> [*]
     failed --> [*]
 
@@ -485,6 +490,10 @@ stateDiagram-v2
 ```
 
 - _blue = running · green = completed · red = failed._
+- Every `SyncManager` entry point catches `\Throwable`: the state is marked
+  failed, then `ErrorHandler` decides. Only an export with failed record ids
+  is retried (`PartialSyncJob`); anything else gets the final-failure
+  notification (`sync.failed`). A notification error is logged, never thrown.
 
 # Caveats / to review
 

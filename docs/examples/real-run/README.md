@@ -35,6 +35,7 @@
 | Tracking tables | the package's own SQLite file (`storage/syncro-sheet/tracking.sqlite`); one subset re-run with `SYNCRO_SHEET_DB_CONNECTION=pgsql` |
 | Sheets | live Google Sheets API, service account with edit access; dedicated test tabs only (the production tab is read as seed data, never written) |
 | Google library | `revolution/laravel-google-sheets` 7.2 |
+| Credentials | rounds 1–8: app-wide `GOOGLE_SERVICE_ENABLED` + `GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION`; round 9: those off, the module's service account handed to the package through `syncro-sheet.google.credentials` |
 
 ```mermaid
 flowchart LR
@@ -112,7 +113,8 @@ class BetTransaction extends Model implements SheetSyncable
     public const SHEET_ROW_WIDTH = 25; // A..Y
 
     public function getSheetIdentifier(): string { return config('betmate.google_sheets.spreadsheet_id'); }
-    public function getSheetName(): string { return config('betmate.google_sheets.sheet_name', 'Thu chi'); }
+    // Its own tab, never the ledger the observer push appends to (throws when unset).
+    public function getSheetName(): string { return config('betmate.google_sheets.sync_sheet_name'); }
 
     // Positional row → the headers name each position ('' = not ours).
     public function defaultSheetHeaders(): array
@@ -208,6 +210,11 @@ SyncroSheet::importFull(BetTransaction::class);  // sheet → DB only
 ```bash
 php artisan sheet:sync "Zuko\Fitly\BetMate\Models\BetTransaction" --direction=both
 ```
+
+The model syncs its own tab (`BETMATE_GOOGLE_SHEETS_SYNC_SHEET_NAME`, no
+default), never the ledger tab the app's observer push appends to: that tab
+holds raw entries, not one row per record. Left unset, the panel actions are
+disabled with the reason and a run fails with it.
 
 In the admin panel (Filament), a "Google Sheet" action group on the
 transactions table dispatches a queued job (`ShouldBeUnique`, one run at a
@@ -325,6 +332,7 @@ notes are in the linked plan docs.
 | S17 | (design) a row moved between plan and apply could receive a wrong id | rows re-read before the write-back; creates + write-back in one DB transaction |
 | S17, round 5 | A 429 failed the run: default throttle 100/min > Google's 60/min/user | default 60/min, 429/5xx retried with backoff; throttle waited on the newest instead of the oldest request |
 | round 7 | "not synced in 7 days" export filter compared `record_id` with `sync_entries.id` | qualified model key; works across connections ([model hooks + tracking](../../agent-plans/20261018_model-hooks-and-tracking-connection.md)) |
+| admin panel, after round 8 | Without `GOOGLE_SERVICE_ENABLED` the client called a missing `TokenManager::getToken()`; the `\Error` escaped `catch (\Exception)`, and failed full / import / two-way runs were never marked failed → run stuck at `running`, 0 records | `\Throwable` caught, run always marked failed, dead-worker runs ended by the next run, clear "no credentials" error, `syncro-sheet.google.credentials` ([failed runs + credentials](../../agent-plans/20261018_failed-runs-and-credentials.md)) |
 
 ## 8. Results
 
@@ -335,6 +343,7 @@ notes are in the linked plan docs.
 | 6 | `a79146e` key by index, rows typed on the sheet | 48 | 1 |
 | 7 | `7f9a6dc` model hooks, tracking tables on SQLite | 49 | 1 |
 | 8 | `7f9a6dc`, this published harness | 48 | 0 |
+| 9 | `5db9bd7` failed runs + package credentials; no `GOOGLE_SERVICE_*` in the environment | 48 | 0 |
 
 In rounds 4–7 the single failure was an app check (S15). It exercised the
 app's own legacy observer push, which writes invalid tracking rows. That
@@ -343,14 +352,19 @@ Round 7 also re-ran a subset with `SYNCRO_SHEET_DB_CONNECTION=pgsql`: 18/18.
 
 Timings on PGlite (WASM PostgreSQL, so slower than a real server), live API:
 
-| Run | Records | Round 7 | Round 8 |
-|---|---|---|---|
-| initial sync (S1) | 100 | 1.3 s | 0.7 s |
-| no-op / single edit (S2–S6) | 100 | 0.2–0.5 s | 0.2–0.5 s |
-| ledger tab, 37 rows created + ids written back (S16) | 43 rows | 1.8 s | 1.8 s |
-| scale initial (S14) | 3 782 | 4.1 s | 3.8 s |
-| scale no-op | 3 782 | 1.7 s | 1.6 s |
-| scale single edit | 3 782 | 2.3 s | 1.6 s |
+| Run | Records | Round 7 | Round 8 | Round 9 |
+|---|---|---|---|---|
+| initial sync (S1) | 100 | 1.3 s | 0.7 s | 0.8 s |
+| no-op / single edit (S2–S6) | 100 | 0.2–0.5 s | 0.2–0.5 s | 0.2–0.6 s |
+| ledger tab, 37 rows created + ids written back (S16) | 43 rows | 1.8 s | 1.8 s | 4.3 s |
+| scale initial (S14) | 3 782 | 4.1 s | 3.8 s | 3.3 s |
+| scale no-op | 3 782 | 1.7 s | 1.6 s | 1.5 s |
+| scale single edit | 3 782 | 2.3 s | 1.6 s | 1.6 s |
+
+Round 9 then drove the admin-panel job (`RunTransactionSheetSyncJob`) three
+times on the test tab: with the module's credentials it completed, and a run
+left `running` 12 minutes earlier was marked `Abandoned`; with no two-way tab,
+and with no credentials, the run failed with the reason instead of hanging.
 
 Round 7, abridged:
 

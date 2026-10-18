@@ -26,7 +26,7 @@ if (! getenv('RT_SCRATCH_DB')) {
     exit(2);
 }
 
-const SHEET_NAME_CONFIG = 'betmate.google_sheets.sheet_name';
+const SHEET_NAME_CONFIG = 'betmate.google_sheets.sync_sheet_name';
 // 1-based row ranges of SOURCE_TAB used as seed data.
 define('SEED_ROWS', explode(':', getenv('RT_SEED_ROWS') ?: '5100:5242'));
 define('LEDGER_ROWS', explode(':', getenv('RT_LEDGER_ROWS') ?: '5200:5242'));

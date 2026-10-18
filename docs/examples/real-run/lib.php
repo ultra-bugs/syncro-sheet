@@ -25,10 +25,10 @@ function boot(): Illuminate\Foundation\Application
     if (TAB === SOURCE_TAB) {
         throw new RuntimeException('Refusing to run: RT_TAB must not be the source tab');
     }
-    // The model reads its tab name from config: point it at the test tab.
-    putenv('BETMATE_GOOGLE_SHEETS_SHEET_NAME=' . TAB);
-    $_ENV['BETMATE_GOOGLE_SHEETS_SHEET_NAME'] = TAB;
-    $_SERVER['BETMATE_GOOGLE_SHEETS_SHEET_NAME'] = TAB;
+    // The model reads its two-way tab from config: point it at the test tab.
+    putenv('BETMATE_GOOGLE_SHEETS_SYNC_SHEET_NAME=' . TAB);
+    $_ENV['BETMATE_GOOGLE_SHEETS_SYNC_SHEET_NAME'] = TAB;
+    $_SERVER['BETMATE_GOOGLE_SHEETS_SYNC_SHEET_NAME'] = TAB;
     chdir(APP);
     require APP . '/vendor/autoload.php';
     $app = require APP . '/bootstrap/app.php';
@@ -36,8 +36,8 @@ function boot(): Illuminate\Foundation\Application
         pglite_patch($app);
     }
     $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-    if (config('betmate.google_sheets.sheet_name') !== TAB) {
-        throw new RuntimeException('Refusing to run: sheet_name is ' . config('betmate.google_sheets.sheet_name'));
+    if (config('betmate.google_sheets.sync_sheet_name') !== TAB) {
+        throw new RuntimeException('Refusing to run: sync_sheet_name is ' . config('betmate.google_sheets.sync_sheet_name'));
     }
     // The app's own observer push would write the same tab concurrently.
     if (config('betmate.google_sheets.enabled')) {

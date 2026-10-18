@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`7f9a6dc`](https://github.com/ultra-bugs/syncro-sheet/commit/7f9a6dc442f65ee59193c57a5a722fa2012ab8d5)
+**Last updated:** 2026-10-18 · verified against [`5db9bd7`](https://github.com/ultra-bugs/syncro-sheet/commit/5db9bd794ff8ba78fa0096a8ca1dab7fbd557b80)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -93,25 +93,28 @@ php artisan migrate
 
 1. Create a Google Cloud Project
 2. Enable Google Sheets API
-3. Create credentials (OAuth 2.0 or Service Account)
-4. Set up your .env file:
+3. Create a Service Account (recommended for servers) or OAuth 2.0 credentials
+4. Share the spreadsheet with the service account's `client_email` (Editor)
+5. Tell the package which credentials to use. The first match wins:
+
+| # | Setting | Value |
+|---|---|---|
+| 1 | `syncro-sheet.google.credentials` (`SYNCRO_SHEET_GOOGLE_CREDENTIALS`) | Service-account JSON path, or the decoded array (a host module can set it at boot). Used by this package only. |
+| 2 | `GOOGLE_SERVICE_ENABLED=true` + `GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION` | revolution/laravel-google-sheets' app-wide service account (`config/google.php`). |
+| 3 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT` | OAuth; the token is read from the cache (`TokenManager`). |
 
 ```env
-GOOGLE_SHEETS_CLIENT_ID=your-client-id
-GOOGLE_SHEETS_CLIENT_SECRET=your-client-secret
-GOOGLE_SHEETS_REDIRECT_URI=your-redirect-uri
-```
+# 1. package only
+SYNCRO_SHEET_GOOGLE_CREDENTIALS=/absolute/path/service-account.json
 
-Or using service account:
-
-```env
-GOOGLE_DEVELOPER_KEY=your-service-account-key
+# 2. or app-wide (also used by anything else calling the Sheets facade)
 GOOGLE_SERVICE_ENABLED=true
+GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION=/absolute/path/service-account.json
 ```
-As a wrapped around `revolution/laravel-google-sheets`. these env vars is taken from `config/google.php`
 
-If you already set these authorization values. You can leave env untouched.
-
+With none of them, every run fails at its first API call with
+`GoogleSheetsException: No Google credentials configured …` (the run is marked
+`failed` with that message).
 
 ### Package Configuration
 
@@ -132,6 +135,9 @@ return [
     'database' => [
         'connection'      => env('SYNCRO_SHEET_DB_CONNECTION'),   // null = own SQLite file (see below)
         'sqlite_database' => env('SYNCRO_SHEET_SQLITE_DATABASE'), // null = storage/syncro-sheet/tracking.sqlite
+    ],
+    'google' => [
+        'credentials'     => env('SYNCRO_SHEET_GOOGLE_CREDENTIALS'),     // path | array | null (see above)
     ],
     // 'logging', 'sheets', 'notifications', 'scheduler' — see the published config
 ];
@@ -549,6 +555,17 @@ try {
     // Handle general sync errors
 }
 ```
+
+Every run ends in `completed` or `failed`:
+
+- Whatever a run throws (an `\Error` included), its `SyncState` is marked
+  `failed` with the message before the exception is rethrown, and the
+  `sync.failed` event / failure notification follow.
+- A run whose worker died (timeout kill, out of memory, deploy) is marked
+  `failed` (`Abandoned: no result after N s`) by the next run of the same
+  model, once it is older than `defaults.timeout` + 60 s.
+- Only an export with known failed record ids is retried (a `PartialSyncJob`
+  re-exports them); imports and two-way runs are not retried automatically.
 
 ## Best Practices
 
