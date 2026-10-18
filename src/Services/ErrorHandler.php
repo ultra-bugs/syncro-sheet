@@ -30,17 +30,23 @@ class ErrorHandler
     }
 
     /**
-     * Handle sync error
+     * Handle the error of a run already marked failed.
+     *
+     * Only an export with known failed records is retried (PartialSyncJob
+     * re-exports those records); any other failure is final.
      */
     public function handleError(
         SyncState $syncState,
-        \Exception $exception,
+        \Throwable $exception,
         array $failedRecords = []
     ): void {
-        $currentRetries = $this->getCurrentRetries($syncState);
+        // Failed runs of this model in the last hour, this one included.
+        $failures = $this->getCurrentRetries($syncState);
 
-        if ($currentRetries < $this->maxRetries) {
-            $this->handleRetry($syncState, $failedRecords, $currentRetries + 1);
+        if ($failedRecords !== []
+            && $syncState->direction === SyncManager::DIRECTION_EXPORT
+            && $failures <= $this->maxRetries) {
+            $this->handleRetry($syncState, $failedRecords, $failures);
         } else {
             $this->handleFinalFailure($syncState, $exception);
         }
@@ -59,14 +65,19 @@ class ErrorHandler
         $this->notificationManager->notifyRetry($syncState, $failedRecords, $retryCount);
     }
 
-    private function handleFinalFailure(SyncState $syncState, \Exception $exception): void
+    private function handleFinalFailure(SyncState $syncState, \Throwable $exception): void
     {
         $this->logger->error(
-            "Sync failed after maximum retries for {$syncState->model_class}",
-            ['error' => $exception->getMessage()]
+            "Sync {$syncState->id} failed for {$syncState->model_class}",
+            ['error' => $exception->getMessage(), 'exception' => $exception::class]
         );
 
-        $this->notificationManager->notifyFinalFailure($syncState, $exception);
+        // A broken notification channel must not hide the sync error.
+        try {
+            $this->notificationManager->notifyFinalFailure($syncState, $exception);
+        } catch (\Throwable $e) {
+            $this->logger->warning("Failure notification for sync {$syncState->id} not sent: {$e->getMessage()}");
+        }
     }
 
     private function getCurrentRetries(SyncState $syncState): int

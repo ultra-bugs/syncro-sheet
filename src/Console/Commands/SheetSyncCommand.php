@@ -64,7 +64,7 @@ class SheetSyncCommand extends Command
             $this->info("Sync completed! Processed {$syncState->total_processed} records.");
 
             return self::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("Sync failed: {$e->getMessage()}");
 
             return self::FAILURE;

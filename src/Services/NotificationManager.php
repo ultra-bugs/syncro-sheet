@@ -75,7 +75,7 @@ class NotificationManager
     /**
      * Notify about final failure
      */
-    public function notifyFinalFailure(SyncState $syncState, \Exception $exception): void
+    public function notifyFinalFailure(SyncState $syncState, \Throwable $exception): void
     {
         Event::dispatch(SyncEvent::SYNC_FAILED, [
             'sync_state' => $syncState,

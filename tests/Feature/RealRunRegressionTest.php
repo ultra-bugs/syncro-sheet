@@ -236,7 +236,7 @@ class RealRunRegressionTest extends TestCase
         $client = new GoogleClient(app(TokenManager::class), app(SyncLogger::class));
         $setup = new \ReflectionMethod($client, 'setupServiceAccount');
         $google = new \Google\Client();
-        $setup->invoke($client, $google);
+        $setup->invoke($client, $google, config('google.service.file'));
 
         @unlink($file);
         $this->assertSame('1', $google->getClientId()); // the file was found and loaded

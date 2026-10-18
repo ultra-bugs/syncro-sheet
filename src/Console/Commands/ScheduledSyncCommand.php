@@ -37,7 +37,7 @@ class ScheduledSyncCommand extends Command
             $this->info('Scheduled syncs dispatched.');
 
             return self::SUCCESS;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->error("Scheduled sync failed: {$e->getMessage()}");
 
             return self::FAILURE;

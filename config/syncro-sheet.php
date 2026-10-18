@@ -76,6 +76,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Google credentials
+    |--------------------------------------------------------------------------
+    | Service account used by the package's own client only: a JSON file path
+    | or the decoded array (a host module can set it at boot). Null falls back
+    | to revolution/laravel-google-sheets: google.service.* when
+    | GOOGLE_SERVICE_ENABLED=true, OAuth otherwise.
+    */
+    'google' => [
+        'credentials' => env('SYNCRO_SHEET_GOOGLE_CREDENTIALS'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Google Sheets Settings
     |--------------------------------------------------------------------------
     */

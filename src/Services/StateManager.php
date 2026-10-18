@@ -23,6 +23,9 @@ use Zuko\SyncroSheet\Models\SyncState;
 
 class StateManager
 {
+    /** Slack past defaults.timeout before a `running` run counts as abandoned. */
+    public const ABANDON_GRACE_SECONDS = 60;
+
     public function __construct(
         private readonly SyncLogger $logger
     ) {
@@ -45,6 +48,8 @@ class StateManager
         string $writeMode,
         string $direction = SyncManager::DIRECTION_EXPORT
     ): SyncState {
+        $this->failAbandonedRuns($modelClass);
+
         return SyncState::create([
             'model_class' => $modelClass,
             'sync_type' => $syncType,
@@ -53,6 +58,27 @@ class StateManager
             'status' => 'running',
             'started_at' => now(),
         ]);
+    }
+
+    /**
+     * End the model's runs still `running` past the run timeout: their worker
+     * died (timeout kill, out of memory, deploy) before reporting a result.
+     */
+    public function failAbandonedRuns(string $modelClass): int
+    {
+        $after = (int) config('syncro-sheet.defaults.timeout', 600) + self::ABANDON_GRACE_SECONDS;
+
+        $abandoned = SyncState::query()
+            ->where('model_class', $modelClass)
+            ->where('status', 'running')
+            ->where('started_at', '<', now()->subSeconds($after))
+            ->get();
+
+        foreach ($abandoned as $syncState) {
+            $this->failSync($syncState, "Abandoned: no result after {$after} s (worker stopped?)");
+        }
+
+        return $abandoned->count();
     }
 
     /**

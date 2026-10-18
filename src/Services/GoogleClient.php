@@ -58,9 +58,12 @@ class GoogleClient
             // Set required scopes for sheets
             $client->setScopes([GoogleSheets::DRIVE, GoogleSheets::SPREADSHEETS]);
 
-            // Handle authentication based on config
-            if (config('google.service.enable')) {
-                $this->setupServiceAccount($client);
+            // Handle authentication based on config: the package's own
+            // credentials first, then revolution's service account, then OAuth.
+            if (filled($credentials = config('syncro-sheet.google.credentials'))) {
+                $this->setupServiceAccount($client, $credentials);
+            } elseif (config('google.service.enable')) {
+                $this->setupServiceAccount($client, config('google.service.file'));
             } else {
                 $this->setupOAuth($client);
             }
@@ -92,14 +95,16 @@ class GoogleClient
     /**
      * Setup service account authentication
      */
-    private function setupServiceAccount(GoogleAPIClient $client): void
+    private function setupServiceAccount(GoogleAPIClient $client, array|string|null $serviceAccountFile): void
     {
-        $serviceAccountFile = config('google.service.file');
-
         if (is_array($serviceAccountFile)) {
             $client->setAuthConfig($serviceAccountFile);
 
             return;
+        }
+
+        if (blank($serviceAccountFile)) {
+            throw new GoogleSheetsException('Service account enabled but no credentials file is set (GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION).');
         }
 
         // Search for the file in multiple locations; an absolute path (the
@@ -132,6 +137,16 @@ class GoogleClient
      */
     private function setupOAuth(GoogleAPIClient $client): void
     {
+        $token = $this->tokenManager->getToken();
+
+        if (blank(config('google.client_id')) && blank($token)) {
+            throw new GoogleSheetsException(
+                'No Google credentials configured: set syncro-sheet.google.credentials (SYNCRO_SHEET_GOOGLE_CREDENTIALS), '
+                .'or enable the service account (GOOGLE_SERVICE_ENABLED=true + GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION), '
+                .'or configure OAuth (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).'
+            );
+        }
+
         $client->setClientId(config('google.client_id'));
         $client->setClientSecret(config('google.client_secret'));
         $client->setRedirectUri(config('google.redirect_uri'));
@@ -139,7 +154,6 @@ class GoogleClient
         $client->setApprovalPrompt(config('google.approval_prompt', 'auto'));
 
         // Set the token if available
-        $token = $this->tokenManager->getToken();
         if ($token) {
             $client->setAccessToken($token);
         }

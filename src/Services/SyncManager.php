@@ -67,8 +67,8 @@ class SyncManager
             $this->notificationManager->notifyCompletion($syncState);
 
             return $syncState;
-        } catch (\Exception $e) {
-            $this->errorHandler->handleError($syncState, $e);
+        } catch (\Throwable $e) {
+            $this->handleSyncError($syncState, $e);
             throw $e;
         }
     }
@@ -92,7 +92,7 @@ class SyncManager
             $this->logger->info("Completed partial sync for {$modelClass}");
 
             return $syncState->fresh();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->handleSyncError($syncState, $e);
             throw $e;
         }
@@ -119,8 +119,8 @@ class SyncManager
             $this->logger->info("Completed full import for {$modelClass}");
 
             return $syncState->fresh();
-        } catch (\Exception $e) {
-            $this->errorHandler->handleError($syncState, $e);
+        } catch (\Throwable $e) {
+            $this->handleSyncError($syncState, $e);
             throw $e;
         }
     }
@@ -144,7 +144,7 @@ class SyncManager
             $this->logger->info("Completed partial import for {$modelClass}");
 
             return $syncState->fresh();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->handleSyncError($syncState, $e);
             throw $e;
         }
@@ -172,8 +172,8 @@ class SyncManager
             $this->logger->info("Completed bidirectional sync for {$modelClass}");
 
             return $syncState->fresh();
-        } catch (\Exception $e) {
-            $this->errorHandler->handleError($syncState, $e);
+        } catch (\Throwable $e) {
+            $this->handleSyncError($syncState, $e);
             throw $e;
         }
     }
@@ -243,10 +243,14 @@ class SyncManager
         }
     }
 
-    private function handleSyncError(SyncState $syncState, \Exception $e): void
+    /**
+     * End the run as failed (whatever was thrown, an \Error included), then
+     * let the error handler decide on retry and notifications.
+     */
+    private function handleSyncError(SyncState $syncState, \Throwable $e): void
     {
-        $this->logger->error("Sync failed for {$syncState->model_class}: {$e->getMessage()}");
         $this->stateManager->failSync($syncState, $e->getMessage());
+        $this->errorHandler->handleError($syncState, $e);
     }
 
     private function determineWriteMode(string $modelClass, array $options = []): string
