@@ -63,6 +63,11 @@ class TestLedger extends Model implements SheetSyncable
         return 'id';
     }
 
+    public function getSheetKeyColumnIndex(): int
+    {
+        return 4;
+    }
+
     public function syncReadOnlyColumns(): array
     {
         return ['total'];
@@ -70,6 +75,10 @@ class TestLedger extends Model implements SheetSyncable
 
     public function fromSheetRow(array $row): array
     {
+        if (($row['amount'] ?? null) === null) {
+            return []; // separator / blank line: not a ledger row
+        }
+
         return [
             'amount' => $row['amount'] ?? null,
             'note' => $row['note'] ?? null,

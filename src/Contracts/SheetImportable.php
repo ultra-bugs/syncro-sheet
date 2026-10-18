@@ -21,7 +21,7 @@ namespace Zuko\SyncroSheet\Contracts;
  * Contract for models that can be imported FROM a Google Sheet back into the
  * database (Sheet -> DB). Rows are matched to records through a primary-key
  * column. The {@see \Zuko\SyncroSheet\Traits\InteractsWithSheet} trait provides
- * sensible defaults for both methods.
+ * sensible defaults for every method.
  */
 interface SheetImportable extends SheetBound
 {
@@ -35,8 +35,21 @@ interface SheetImportable extends SheetBound
     public function getSheetKeyColumn(): string;
 
     /**
+     * 0-based index of the sheet column holding the primary key (A = 0).
+     *
+     * The key is read from and written to this cell by position, so the
+     * column does not need a header. It is also where the id of a record
+     * created from a sheet row without a key is written back.
+     */
+    public function getSheetKeyColumnIndex(): int;
+
+    /**
      * Transform a single associative sheet row (header => value) into an array
      * of model attributes ready to be persisted.
+     *
+     * Return [] when the row is not a record (separator, total, blank line):
+     * such a row without a key is never created, and for an existing record
+     * nothing is updated.
      *
      * @param  array<string, mixed>  $row
      * @return array<string, mixed>

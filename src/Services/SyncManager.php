@@ -209,8 +209,8 @@ class SyncManager
      *
      * A model that is both exportable and importable must round-trip its
      * primary key through the sheet: the exported row has to carry the key
-     * column so the importer can match rows back to records. Fail fast when a
-     * bidirectional model does not expose its key column.
+     * column at getSheetKeyColumnIndex() so the importer can match rows back
+     * to records. Fail fast when a bidirectional model does not.
      */
     private function assertBidirectionalPrimaryKey(string $modelClass): void
     {
@@ -228,14 +228,17 @@ class SyncManager
 
         $keyColumn = $model->getSheetKeyColumn();
 
-        $headers = method_exists($model, 'defaultSheetHeaders')
+        $headers = array_values(method_exists($model, 'defaultSheetHeaders')
             ? $model->defaultSheetHeaders()
-            : array_keys($model->toSheetRow());
+            : array_keys($model->toSheetRow()));
 
-        if (! in_array($keyColumn, $headers, true)) {
+        $keyIndex = in_array($keyColumn, $headers, true) ? $model->getSheetKeyColumnIndex() : null;
+
+        if ($keyIndex === null || ($headers[$keyIndex] ?? null) !== $keyColumn) {
             throw new SyncException(
-                "Bidirectional sync requires the primary-key column [{$keyColumn}] in the sheet row of "
-                .$modelClass.'; add it to toSheetRow()/defaultSheetHeaders() or adjust getSheetKeyColumn().'
+                "Bidirectional sync requires the primary-key column [{$keyColumn}] at position "
+                .($keyIndex ?? '?')." (getSheetKeyColumnIndex()) of the sheet row of {$modelClass}; "
+                .'add it to toSheetRow()/defaultSheetHeaders() or adjust getSheetKeyColumn()/getSheetKeyColumnIndex().'
             );
         }
     }

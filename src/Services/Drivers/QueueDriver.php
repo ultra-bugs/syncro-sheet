@@ -74,7 +74,8 @@ class QueueDriver implements SyncDriver
             return;
         }
 
-        foreach (array_chunk($values, $this->chunkSize()) as $rows) {
+        // Keys preserved: the job derives each row's sheet row number from it.
+        foreach (array_chunk($values, $this->chunkSize(), true) as $rows) {
             $this->queue(new ImportBatchJob($modelClass, $headers, $rows));
         }
     }

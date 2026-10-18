@@ -42,6 +42,9 @@ class FakeGoogleClient extends GoogleClient
 
     public bool $cleared = false;
 
+    /** When true, updateRows() fails like an API error. */
+    public bool $failUpdates = false;
+
     public function __construct()
     {
         // Intentionally bypass the real GoogleClient dependencies.
@@ -50,6 +53,16 @@ class FakeGoogleClient extends GoogleClient
     public function readSheet(string $spreadsheetId, string $sheetName): array
     {
         return $this->sheetValues;
+    }
+
+    public function readRows(string $spreadsheetId, string $sheetName, array $rowIndexes): array
+    {
+        $rows = [];
+        foreach ($rowIndexes as $row) {
+            $rows[$row] = $this->sheetValues[$row - 1] ?? [];
+        }
+
+        return $rows;
     }
 
     public function getHeaders(string $spreadsheetId, string $sheetName): array
@@ -86,6 +99,10 @@ class FakeGoogleClient extends GoogleClient
 
     public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
     {
+        if ($this->failUpdates) {
+            throw new \Zuko\SyncroSheet\Exceptions\GoogleSheetsException('Simulated API failure');
+        }
+
         $this->updatedByIndex = array_replace($this->updatedByIndex, $rowsByIndex);
     }
 

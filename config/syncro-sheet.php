@@ -74,9 +74,17 @@ return [
             'date_time_render_option' => 'FORMATTED_STRING',
         ],
         'cache_ttl' => 3600,
+        // Client-side throttle. Google's default quota is 60 read and 60 write
+        // requests per minute per user; this counts both together.
         'rate_limit' => [
-            'max_requests' => 100,
+            'max_requests' => 60,
             'per_seconds' => 60,
+        ],
+        // Quota (429) and transient (5xx) errors are retried with exponential
+        // backoff: base_delay_ms * 2^attempt (capped at 64 s) + jitter.
+        'retry' => [
+            'times' => 5,
+            'base_delay_ms' => 2000,
         ],
     ],
 

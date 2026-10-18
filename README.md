@@ -194,8 +194,9 @@ php artisan sheet:sync Product --direction=import --ids=1,2,3
 
 Make your model importable by implementing `SheetImportable` (or `SheetSyncable`
 if it exports too, as below). The `InteractsWithSheet` trait provides defaults
-(`getSheetKeyColumn()` returns the model key name, `fromSheetRow()` maps headers
-straight to attributes), so most models only need to declare the interface:
+(`getSheetKeyColumn()` returns the model key name, `getSheetKeyColumnIndex()`
+its position in the exported row, `fromSheetRow()` maps headers straight to
+attributes), so most models only need to declare the interface:
 
 ```php
 use Zuko\SyncroSheet\Contracts\SheetSyncable; // = SheetExportable + SheetImportable
@@ -210,7 +211,12 @@ class Product extends Model implements SheetSyncable
     // Override only when the sheet layout differs from the table:
     public function getSheetKeyColumn(): string
     {
-        return 'id'; // sheet header holding the primary key
+        return 'id'; // attribute / header name of the primary key
+    }
+
+    public function getSheetKeyColumnIndex(): int
+    {
+        return 23; // 0-based: the key lives in column X (its header may be blank)
     }
 
     public function fromSheetRow(array $row): array
@@ -237,12 +243,13 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 > **Primary key is required.** A bidirectional model (`SheetSyncable`) must
 > expose its key column in the exported row — the key has to round-trip through
 > the sheet so import can match
-> rows back. If `getSheetKeyColumn()` is absent from `toSheetRow()` /
-> `defaultSheetHeaders()`, both `fullSync()` and `importFull()` throw a
-> `SyncException` up front.
+> rows back. If `getSheetKeyColumn()` is not at position
+> `getSheetKeyColumnIndex()` of `toSheetRow()` / `defaultSheetHeaders()`, both
+> `fullSync()` and `importFull()` throw a `SyncException` up front.
 >
-> **Matching & semantics:** rows are matched to records by the primary-key
-> column (`getSheetKeyColumn()`). Writes are **upsert** — matched rows update,
+> **Matching & semantics:** rows are matched to records by the key cell at
+> `getSheetKeyColumnIndex()` (read by position; a non-blank header there must
+> be `getSheetKeyColumn()`). Writes are **upsert** — matched rows update,
 > new rows create, nothing is deleted. Set
 > `syncro-sheet.defaults.import.use_batch_upsert = true` to use `Model::upsert()`
 > (one query per chunk, skips model events/mutators) for large trusted imports.
@@ -256,7 +263,13 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 >   instance), so it can merge into attributes it already holds (e.g.
 >   `array_merge($this->metadata ?? [], [...])`).
 > - Soft-deleted records are left alone: never re-created, never updated.
-> - Rows without a key are skipped.
+> - **Rows without a key** (typed on the sheet) are created in the DB and the
+>   new key is written back into their key cell, so they match from then on.
+>   `fromSheetRow()` returning `[]` marks a row that is not a record (date
+>   separator, total, blank line) — it is left alone. Rows are re-read right
+>   before the key is written: one that was edited or moved meanwhile (a row
+>   inserted above) waits for the next run. Creates and the write-back share a
+>   DB transaction, so a failed sheet write leaves no record behind.
 
 ### Sheet layout
 
@@ -290,6 +303,9 @@ public function toSheetRow(): array
   empty sheet gets the header row first.
 - Sheet names are always quoted, so tabs named like a cell (`Oct25`, `2025`)
   are addressed correctly.
+- API quota: requests are throttled client-side (`sheets.rate_limit`, default
+  60/min — Google's default per-user quota) and quota (429) / transient (5xx)
+  errors are retried with exponential backoff (`sheets.retry`).
 
 ### 5. Bidirectional (two-way reconcile)
 

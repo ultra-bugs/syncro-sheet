@@ -17,6 +17,8 @@
 
 namespace Zuko\SyncroSheet\Traits;
 
+use Zuko\SyncroSheet\Exceptions\SyncException;
+
 /**
  * Convenience defaults for {@see \Zuko\SyncroSheet\Contracts\SheetImportable}.
  *
@@ -37,6 +39,27 @@ trait InteractsWithSheet
     public function getSheetKeyColumn(): string
     {
         return $this->getKeyName();
+    }
+
+    /**
+     * Default key position: where getSheetKeyColumn() sits in the exported row
+     * (defaultSheetHeaders(), or the keys of toSheetRow()).
+     */
+    public function getSheetKeyColumnIndex(): int
+    {
+        $headers = method_exists($this, 'defaultSheetHeaders')
+            ? $this->defaultSheetHeaders()
+            : array_keys($this->toSheetRow());
+
+        $index = array_search($this->getSheetKeyColumn(), array_values($headers), true);
+        if ($index === false) {
+            throw new SyncException(
+                'Cannot locate the key column ['.$this->getSheetKeyColumn().'] of '.static::class
+                .'; override getSheetKeyColumnIndex().'
+            );
+        }
+
+        return $index;
     }
 
     /**

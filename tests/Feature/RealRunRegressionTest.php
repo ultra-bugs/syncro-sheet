@@ -109,12 +109,13 @@ class RealRunRegressionTest extends TestCase
     public function test_appended_row_follows_the_sheet_header_positions_after_the_last_row(): void
     {
         $this->ledger(7, 1);
-        // Sheet column order differs from the model and has a sheet-only column.
-        $this->fakeClient->sheetValues = [['id', 'extra', 'note', 'amount', 'total'], [99, 'x', 'other', 5, 5]];
+        // Sheet column order differs from the model and has a sheet-only
+        // column; the key stays at its declared position (E).
+        $this->fakeClient->sheetValues = [['note', 'extra', 'amount', 'total', 'id'], ['other', 'x', 5, 5, 99]];
 
         $this->sync();
 
-        $this->assertSame([[7, '', '', 1.0, 1.0]], $this->fakeClient->appended);
+        $this->assertSame([['', '', 1.0, 1.0, 7]], $this->fakeClient->appended);
         $this->assertSame([2], $this->fakeClient->appendedAfter);
     }
 
@@ -239,6 +240,45 @@ class RealRunRegressionTest extends TestCase
 
         @unlink($file);
         $this->assertSame('1', $google->getClientId()); // the file was found and loaded
+    }
+
+    public function test_quota_errors_are_retried_with_backoff(): void
+    {
+        config(['syncro-sheet.sheets.retry.base_delay_ms' => 1]);
+        $client = new GoogleClient(app(TokenManager::class), app(SyncLogger::class));
+        $stub = new class
+        {
+            public array $failures = [429, 503];
+
+            public int $calls = 0;
+
+            public function __call(string $method, array $arguments): static
+            {
+                return $this;
+            }
+
+            public function all(): array
+            {
+                $this->calls++;
+                if ($code = array_shift($this->failures)) {
+                    throw new \Google\Service\Exception('quota', $code);
+                }
+
+                return [['id']];
+            }
+        };
+        (new \ReflectionProperty($client, 'sheetsClient'))->setValue($client, $stub);
+
+        $this->assertSame([['id']], $client->readSheet('id', 'Sheet'));
+        $this->assertSame(3, $stub->calls);
+
+        $stub->failures = [403];
+        $this->expectException(\Zuko\SyncroSheet\Exceptions\GoogleSheetsException::class);
+        try {
+            $client->readSheet('id', 'Sheet');
+        } finally {
+            $this->assertSame(4, $stub->calls, 'a 403 is not retried');
+        }
     }
 
     public function test_revolution_google_config_is_merged(): void

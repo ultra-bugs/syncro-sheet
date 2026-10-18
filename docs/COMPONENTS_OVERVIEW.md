@@ -46,7 +46,7 @@ the overlapping-sounding terms.
 | **source_of_truth** | config / model `getSyncSourceOfTruth()` | Winning side on a reconcile conflict: `db` or `sheet` | — |
 | **SheetBound** | interface | Base: `getSheetIdentifier()`, `getSheetName()` | — |
 | **SheetExportable** | interface | Model can export (`toSheetRow()`) | the old `SheetSyncable` |
-| **SheetImportable** | interface | Model can import (`getSheetKeyColumn()`, `fromSheetRow()`) | — |
+| **SheetImportable** | interface | Model can import (`getSheetKeyColumn()`, `getSheetKeyColumnIndex()`, `fromSheetRow()`) | — |
 | **SheetSyncable** | interface | **Bidirectional** model — extends both of the above | old meaning (= export) |
 | **Exporter** | service | Engine DB→Sheet (chunked write) | Importer |
 | **Importer** | service | Engine Sheet→DB (chunked upsert by PK) | Exporter |
@@ -92,7 +92,8 @@ interface SheetExportable extends SheetBound
 
 interface SheetImportable extends SheetBound
 {
-    public function getSheetKeyColumn(): string;     // sheet header mapped to PK
+    public function getSheetKeyColumn(): string;     // attribute / header name of the PK
+    public function getSheetKeyColumnIndex(): int;   // 0-based column of the PK cell (header may be blank)
     public function fromSheetRow(array $row): array; // Sheet row -> model attributes
 }
 
@@ -453,6 +454,7 @@ stateDiagram-v2
 |---|---|---|
 | **REVIEW** | Queue export fans out *all* primary keys each run; the "not synced in 7 days" filter is not applied on this path yet. | [@QueueDriver.php](../src/Services/Drivers/QueueDriver.php) |
 | **REVIEW** | Queue reconcile apply jobs do not open a per-chunk `SyncState`, so that path has no per-run audit row. | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) |
+| **NOTE** | Key by column index; rows without a key are created and get their key written back | [@20261018_sheet-key-column-index.md](agent-plans/20261018_sheet-key-column-index.md) |
 | **NOTE** | Real-run defects and their fixes (positional rows, append anchoring, typed values, guarded keys, soft deletes, read-only columns) | [@20261018_real-run-fixes.md](agent-plans/20261018_real-run-fixes.md) |
 | **REVIEW** | Only numeric primary keys are supported — `sync_entries.record_id` / `sync_snapshots.record_id` are `bigInteger`. | [@create_sync_entries_table.php](../database/migrations/2024_06_01_000001_create_sync_entries_table.php) |
 

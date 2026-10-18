@@ -76,7 +76,9 @@ class Reconciler
      * @return array{decisions: array<int, array{pk: int|string, action: string, payload: array, hash: string}>, seeds: array<int|string, string>}
      *   - decisions: actionable records. action 'import' -> payload {assoc};
      *     action 'export' -> payload {rowIndex (int|null), appendAt (int|null),
-     *     values (columnIndex => cell), headers (list|null: bootstrap an empty sheet)}.
+     *     values (columnIndex => cell), headers (list|null: bootstrap an empty sheet)};
+     *     action 'create' (sheet row without a key; pk null) -> payload {rowIndex,
+     *     raw, assoc, writable, hashColumns}.
      *   - seeds: pk => hash for records that already agree but have no baseline yet.
      */
     public function decide(string $modelClass): array
@@ -97,14 +99,18 @@ class Reconciler
         $layout = $this->layout($model, $headers, $values[0] ?? [], $keyColumn);
         $layout['nextRow'] = max(count($values), 1) + 1;
 
+        $sheet = $this->readSheet($model, $values, $layout);
         $sides = [
-            'sheet' => $this->readSheet($values, $keyColumn, $layout),
+            'sheet' => $sheet['keyed'],
             'db' => $this->readDatabase($modelClass, $headers, $layout),
             'base' => $this->stateManager->baselineFor($modelClass),
             'trashed' => $this->trashedKeys($modelClass),
         ];
 
-        return $this->plan($sides, $headers, $layout, $this->resolveSourceOfTruth($model));
+        $plan = $this->plan($sides, $headers, $layout, $this->resolveSourceOfTruth($model));
+        array_push($plan['decisions'], ...$this->createDecisions($model, $sheet['keyless'], $layout));
+
+        return $plan;
     }
 
     /**
@@ -126,14 +132,21 @@ class Reconciler
 
         $toImport = [];
         $exports = ['updates' => [], 'appends' => [], 'headers' => null];
+        $toCreate = [];
         $newBaseline = [];
         $pks = [];
 
         foreach ($decisions as $decision) {
+            $payload = $decision['payload'];
+            if ($decision['action'] === 'create') {
+                $toCreate[$payload['rowIndex']] = $payload;
+
+                continue;
+            }
+
             $pk = $decision['pk'];
             $pks[] = $pk;
             $newBaseline[$pk] = $decision['hash'];
-            $payload = $decision['payload'];
 
             if ($decision['action'] === 'import') {
                 $toImport[$pk] = $payload['assoc'];
@@ -147,9 +160,51 @@ class Reconciler
 
         $this->applyImports($modelClass, $toImport);
         $this->applyExports($model, $exports);
+        foreach ($this->applyCreates($model, $toCreate) as $pk => $hash) {
+            $pks[] = $pk;
+            $newBaseline[$pk] = $hash;
+        }
         $this->stateManager->storeSnapshots($modelClass, $newBaseline);
 
         return $pks;
+    }
+
+    /**
+     * Create records for sheet rows without a key and write each record's
+     * writable cells (its new key included) back onto its row, so both sides
+     * agree right away.
+     *
+     * @param  array<int, array{rowIndex: int, raw: array, assoc: array, writable: array<string, int>, hashColumns: array<int, string>}>  $toCreate
+     * @return array<int|string, string>  new pk => baseline hash
+     */
+    private function applyCreates(SheetSyncable $model, array $toCreate): array
+    {
+        if (empty($toCreate)) {
+            return [];
+        }
+
+        $headers = $this->resolveHeaders($model);
+        $hashes = [];
+        $rows = array_map(static fn (array $payload) => ['raw' => $payload['raw'], 'assoc' => $payload['assoc']], $toCreate);
+
+        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, &$hashes) {
+            $updates = [];
+            foreach ($records as $rowIndex => $record) {
+                $record = $record->fresh() ?? $record; // DB defaults / casts, as the next run reads it
+                $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
+                $writable = $toCreate[$rowIndex]['writable'];
+
+                $updates[$rowIndex] = array_combine(
+                    array_values($writable),
+                    $this->transformer->formatRow($assoc, array_keys($writable))
+                );
+                $hashes[$record->getKey()] = $this->transformer->canonicalHash($assoc, $toCreate[$rowIndex]['hashColumns']);
+            }
+
+            $this->googleClient->updateRows($model->getSheetIdentifier(), $model->getSheetName(), $updates);
+        });
+
+        return $hashes;
     }
 
     /**
@@ -157,7 +212,8 @@ class Reconciler
      * take part in change detection.
      *
      * @return array{columns: array<string, int>, writable: array<string, int>, hash: array<int, string>, headers: array<int, string>|null}
-     *   columns: model header => 0-based sheet column (headers present on both sides);
+     *   columns: model header => 0-based sheet column (headers present on both sides,
+     *            plus the key at getSheetKeyColumnIndex());
      *   writable: the subset written onto an existing row (minus read-only columns);
      *   hash: the headers compared by canonicalHash();
      *   headers: the model headers to write first when the sheet is empty.
@@ -166,12 +222,7 @@ class Reconciler
     {
         $bootstrap = empty($sheetHeaders) ? $headers : null;
         $source = $bootstrap ?? $sheetHeaders;
-
-        if (! in_array($keyColumn, $source, true)) {
-            throw new ImportException(
-                "Sheet is missing the key column [{$keyColumn}] required to reconcile ".get_class($model)
-            );
-        }
+        $this->importer->assertKeyHeader($model, $source);
 
         $columns = [];
         foreach ($headers as $header) {
@@ -180,6 +231,8 @@ class Reconciler
                 $columns[$header] = $position;
             }
         }
+        // The key lives at its declared position, whatever (if any) its header is.
+        $columns[$keyColumn] = $model->getSheetKeyColumnIndex();
 
         $readOnly = $this->resolveReadOnly($model);
         $ignore = array_merge($this->resolveHashIgnore($model), $readOnly);
@@ -277,34 +330,71 @@ class Reconciler
     }
 
     /**
-     * Index the sheet rows (header row included in $values) by primary key.
+     * Index the sheet rows (header row included in $values) by primary key,
+     * read from the key cell by position; rows whose key cell is empty are
+     * returned apart (candidates for creation).
      *
-     * @return array<string, array{rowIndex: int, assoc: array<string, mixed>, hash: string}>
+     * @return array{keyed: array<string, array{rowIndex: int, assoc: array<string, mixed>, hash: string}>, keyless: array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>}
      */
-    private function readSheet(array $values, string $keyColumn, array $layout): array
+    private function readSheet(SheetSyncable $model, array $values, array $layout): array
     {
         $sheetHeaders = array_shift($values);
+        $map = ['keyed' => [], 'keyless' => []];
         if (empty($sheetHeaders) || empty($values)) {
-            return [];
+            return $map;
         }
 
-        $map = [];
+        $keyColumn = $model->getSheetKeyColumn();
+        $keyIndex = $model->getSheetKeyColumnIndex();
         foreach ($values as $offset => $row) {
+            if ($this->importer->trimRow($row) === []) {
+                continue; // blank line
+            }
+
+            // +2: one for the header row shifted off, one for 1-based rows.
+            $rowIndex = $offset + 2;
+            $pk = $this->importer->normalizeKey($row[$keyIndex] ?? null);
             $assoc = $this->rowToAssoc($sheetHeaders, $row);
-            $pk = $assoc[$keyColumn] ?? null;
-            if ($pk === null || $pk === '') {
+            $assoc[$keyColumn] = $pk;
+
+            if ($pk === null) {
+                $map['keyless'][$rowIndex] = ['raw' => $row, 'assoc' => $assoc];
+
                 continue;
             }
 
-            $map[(string) $pk] = [
-                // +2: one for the header row shifted off, one for 1-based rows.
-                'rowIndex' => $offset + 2,
+            $map['keyed'][(string) $pk] = [
+                'rowIndex' => $rowIndex,
                 'assoc' => $assoc,
                 'hash' => $this->transformer->canonicalHash($assoc, $layout['hash']),
             ];
         }
 
         return $map;
+    }
+
+    /**
+     * Sheet rows without a key that map to a record: create them in the DB and
+     * write the new key back (applied by applyChunk()).
+     */
+    private function createDecisions(SheetSyncable $model, array $keyless, array $layout): array
+    {
+        $decisions = [];
+        foreach ($keyless as $rowIndex => $row) {
+            if ($this->importer->newRecordAttributes($model, $this->transformer->parseRow($row['assoc'])) === []) {
+                continue; // not a record (separator, total, ...)
+            }
+
+            $decisions[] = ['pk' => null, 'action' => 'create', 'hash' => null, 'payload' => [
+                'rowIndex' => $rowIndex,
+                'raw' => $row['raw'],
+                'assoc' => $this->transformer->parseRow($row['assoc']),
+                'writable' => $layout['writable'],
+                'hashColumns' => $layout['hash'],
+            ]];
+        }
+
+        return $decisions;
     }
 
     /**

@@ -18,6 +18,8 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Google\Client as GoogleAPIClient;
+use Closure;
+use Google\Service\Exception as GoogleServiceException;
 use Google\Service\Sheets as GoogleSheets;
 use Google\Service\Sheets\BatchUpdateValuesRequest;
 use Google\Service\Sheets\ValueRange;
@@ -176,12 +178,8 @@ class GoogleClient
      */
     public function clearSheet(string $spreadsheetId, string $sheetName): void
     {
-        $this->checkRateLimit();
-
         try {
-            $this->scoped($spreadsheetId, $sheetName)->clear();
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName)->clear());
 
             $this->logger->info("Cleared sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -198,20 +196,47 @@ class GoogleClient
      */
     public function readSheet(string $spreadsheetId, string $sheetName): array
     {
-        $this->checkRateLimit();
-
         try {
-            $values = $this->scoped($spreadsheetId, $sheetName)
+            return $this->call(fn () => $this->scoped($spreadsheetId, $sheetName)
                 ->valueRenderOption(config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'))
                 ->dateTimeRenderOption(config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'))
-                ->all();
-
-            $this->updateRateLimit();
-
-            return $values;
+                ->all());
         } catch (\Exception $e) {
             $this->logger->error("Failed to read from Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to read from Google Sheets: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Re-read specific rows (1-based absolute indexes) in one values.batchGet,
+     * with the same render options as readSheet().
+     *
+     * @param  array<int, int>  $rowIndexes
+     * @return array<int, array<int, mixed>>  rowIndex => cell values (trailing blanks trimmed)
+     */
+    public function readRows(string $spreadsheetId, string $sheetName, array $rowIndexes): array
+    {
+        if (empty($rowIndexes)) {
+            return [];
+        }
+
+        try {
+            $quoted = "'".str_replace("'", "''", $sheetName)."'";
+            $response = $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchGet($spreadsheetId, [
+                'ranges' => array_map(static fn (int $row) => "{$quoted}!{$row}:{$row}", array_values($rowIndexes)),
+                'valueRenderOption' => config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'),
+                'dateTimeRenderOption' => config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'),
+            ]));
+
+            $rows = [];
+            foreach (array_values($rowIndexes) as $position => $row) {
+                $rows[$row] = $response->getValueRanges()[$position]->getValues()[0] ?? [];
+            }
+
+            return $rows;
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to read rows from Google Sheets: {$e->getMessage()}");
+            throw new GoogleSheetsException("Failed to read rows from Google Sheets: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -232,12 +257,8 @@ class GoogleClient
      */
     public function setHeaders(string $spreadsheetId, string $sheetName, array $headers): void
     {
-        $this->checkRateLimit();
-
         try {
-            $this->scoped($spreadsheetId, $sheetName, 'A1')->update([array_values($headers)]);
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName, 'A1')->update([array_values($headers)]));
 
             $this->logger->info("Set headers in sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -288,13 +309,9 @@ class GoogleClient
             return;
         }
 
-        $this->checkRateLimit();
-
         try {
-            $this->scoped($spreadsheetId, $sheetName, 'A'.($afterRow + 1))
-                ->append(array_map('array_values', $rows), 'RAW', 'OVERWRITE');
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName, 'A'.($afterRow + 1))
+                ->append(array_map('array_values', $rows), 'RAW', 'OVERWRITE'));
 
             $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -331,14 +348,11 @@ class GoogleClient
             return;
         }
 
-        $this->checkRateLimit();
-
         try {
-            $this->getClient()->getService()->spreadsheets_values->batchUpdate(
+            $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchUpdate(
                 $spreadsheetId,
                 new BatchUpdateValuesRequest(['valueInputOption' => 'RAW', 'data' => $data])
-            );
-            $this->updateRateLimit();
+            ));
 
             $this->logger->info('Updated '.count($rowsByIndex)." row(s) in sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -427,7 +441,8 @@ class GoogleClient
         });
 
         if (count($this->rateLimits) >= $maxRequests) {
-            $sleepTime = end($this->rateLimits) - (time() - $perSeconds) + 1;
+            // Wait until the oldest request of the window leaves it.
+            $sleepTime = reset($this->rateLimits) - (time() - $perSeconds) + 1;
             if ($sleepTime > 0) {
                 sleep($sleepTime);
             }
@@ -437,5 +452,40 @@ class GoogleClient
     private function updateRateLimit(): void
     {
         $this->rateLimits[] = time();
+    }
+
+    /**
+     * Run one API call under the client-side rate limit, retrying quota (429)
+     * and transient server errors (5xx) with exponential backoff + jitter, as
+     * Google recommends. Other errors are rethrown at once.
+     *
+     * @template T
+     *
+     * @param  Closure(): T  $operation
+     * @return T
+     */
+    private function call(Closure $operation): mixed
+    {
+        $retries = (int) config('syncro-sheet.sheets.retry.times', 5);
+        $delayMs = (int) config('syncro-sheet.sheets.retry.base_delay_ms', 2000);
+
+        for ($attempt = 0; ; $attempt++) {
+            $this->checkRateLimit();
+            try {
+                $result = $operation();
+                $this->updateRateLimit();
+
+                return $result;
+            } catch (GoogleServiceException $e) {
+                $this->updateRateLimit();
+                if ($attempt >= $retries || ! in_array($e->getCode(), [429, 500, 502, 503, 504], true)) {
+                    throw $e;
+                }
+
+                $waitMs = min($delayMs * (2 ** $attempt), 64000) + random_int(0, 500);
+                $this->logger->warning("Google Sheets API {$e->getCode()}, retry ".($attempt + 1)."/{$retries} in {$waitMs} ms");
+                usleep($waitMs * 1000);
+            }
+        }
     }
 }

@@ -62,27 +62,16 @@ class Importer
      * queue driver's ImportBatchJob, which carries the rows in its payload.
      *
      * @param  array<int, string>        $headers   the sheet header row
-     * @param  array<int, array<mixed>>  $rawRows   data rows (no header)
+     * @param  array<int, array<mixed>>  $rawRows   data rows (no header), keyed by data-row offset
      * @return array<int, int|string>    persisted primary keys
      */
     public function importRows(string $modelClass, array $headers, array $rawRows): array
     {
-        /** @var SheetImportable $model */
+        /** @var Model&SheetImportable $model */
         $model = new $modelClass;
-        $keyColumn = $model->getSheetKeyColumn();
+        $this->assertKeyHeader($model, $headers);
 
-        if (! in_array($keyColumn, $headers, true)) {
-            throw new ImportException(
-                "Sheet is missing the key column [{$keyColumn}] required to import {$modelClass}"
-            );
-        }
-
-        $preparedRows = $this->prepareRows($headers, $rawRows, $keyColumn, null);
-        if (empty($preparedRows)) {
-            return [];
-        }
-
-        return $this->persist($modelClass, $preparedRows);
+        return $this->persistChunk($model, $this->prepareRows($model, $headers, $rawRows, null));
     }
 
     /**
@@ -113,12 +102,7 @@ class Importer
             return ['total_processed' => 0, 'last_processed_id' => null];
         }
 
-        $keyColumn = $model->getSheetKeyColumn();
-        if (! in_array($keyColumn, $headers, true)) {
-            throw new ImportException(
-                "Sheet is missing the key column [{$keyColumn}] required to import {$modelClass}"
-            );
-        }
+        $this->assertKeyHeader($model, $headers);
 
         $allowed = $allowedIds === null
             ? null
@@ -127,8 +111,9 @@ class Importer
         $totalProcessed = 0;
         $lastProcessedId = null;
 
-        foreach (array_chunk($values, $batchSize) as $chunk) {
-            $processedIds = $this->persist($modelClass, $this->prepareRows($headers, $chunk, $keyColumn, $allowed));
+        // Keys preserved: a row's offset gives its sheet row number.
+        foreach (array_chunk($values, $batchSize, true) as $chunk) {
+            $processedIds = $this->persistChunk($model, $this->prepareRows($model, $headers, $chunk, $allowed));
 
             if (empty($processedIds)) {
                 continue;
@@ -219,34 +204,196 @@ class Importer
     }
 
     /**
-     * Turn raw sheet rows into [key, assoc] pairs, applying the partial filter.
+     * The key is read by position, so its header may be blank; a non-blank
+     * header at that position must be the key column (otherwise the index
+     * points at another column and every row would look keyless).
      *
-     * @return array<int, array{key: mixed, assoc: array<string, mixed>}>
+     * @param  array<int, mixed>  $headers  the sheet header row
      */
-    private function prepareRows(array $headers, array $chunk, string $keyColumn, ?array $allowed): array
+    public function assertKeyHeader(SheetImportable $model, array $headers): void
     {
-        $prepared = [];
+        $keyIndex = $model->getSheetKeyColumnIndex();
+        $header = $headers[$keyIndex] ?? '';
 
-        foreach ($chunk as $row) {
+        if ($header !== '' && $header !== null && $header !== $model->getSheetKeyColumn()) {
+            throw new ImportException(
+                'Sheet is missing the key column ['.$model->getSheetKeyColumn().'] required to import '
+                .get_class($model).": column {$keyIndex} holds [{$header}]"
+            );
+        }
+    }
+
+    /**
+     * Create records from sheet rows that have no key yet, then write each new
+     * key back into the row's key cell, so the row is matched from then on.
+     *
+     * Rows are re-read first: one that changed or moved since it was read
+     * (edited, or shifted by a row inserted above) is left for the next run.
+     * Creates and the write-back share one DB transaction, so a failed sheet
+     * write leaves no record behind to be duplicated on the next run.
+     *
+     * @param  array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>  $rows  rowIndex => row
+     * @param  (callable(array<int, Model>): void)|null  $writeBack  rowIndex => created record; default writes the key cell
+     * @return array<int, Model>  rowIndex => created record
+     */
+    public function createFromSheetRows(SheetImportable $model, array $rows, ?callable $writeBack = null): array
+    {
+        $rows = array_filter($rows, fn (array $row) => $this->newRecordAttributes($model, $row['assoc']) !== []);
+        $rows = $this->stillUnchanged($model, $rows);
+        if (empty($rows)) {
+            return [];
+        }
+
+        return $model->getConnection()->transaction(function () use ($model, $rows, $writeBack) {
+            $created = [];
+            foreach ($rows as $rowIndex => $row) {
+                $record = $model->newInstance();
+                $record->fill($this->newRecordAttributes($record, $row['assoc']))->save();
+                $created[$rowIndex] = $record;
+            }
+
+            ($writeBack ?? fn (array $records) => $this->writeKeys($model, $records))($created);
+
+            return $created;
+        });
+    }
+
+    /**
+     * fromSheetRow() of a new instance, without the key ([] = not a record).
+     */
+    public function newRecordAttributes(SheetImportable $model, array $assoc): array
+    {
+        $attributes = $model->newInstance()->fromSheetRow($assoc);
+        unset($attributes[$model->getSheetKeyColumn()], $attributes[$model->getKeyName()]);
+
+        return $attributes;
+    }
+
+    /**
+     * @param  array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>  $rows
+     * @return array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>
+     */
+    private function stillUnchanged(SheetImportable $model, array $rows): array
+    {
+        if (empty($rows)) {
+            return [];
+        }
+
+        $current = $this->googleClient->readRows($model->getSheetIdentifier(), $model->getSheetName(), array_keys($rows));
+
+        return array_filter(
+            $rows,
+            fn (array $row, int $rowIndex) => $this->trimRow($current[$rowIndex] ?? []) === $this->trimRow($row['raw']),
+            ARRAY_FILTER_USE_BOTH
+        );
+    }
+
+    /**
+     * @param  array<int, Model>  $records  rowIndex => created record
+     */
+    private function writeKeys(SheetImportable $model, array $records): void
+    {
+        $keyIndex = $model->getSheetKeyColumnIndex();
+
+        $this->googleClient->updateRows(
+            $model->getSheetIdentifier(),
+            $model->getSheetName(),
+            array_map(static fn (Model $record) => [$keyIndex => $record->getKey()], $records)
+        );
+    }
+
+    /**
+     * Split raw sheet rows into keyed rows (to upsert) and keyless rows (to
+     * create), applying the partial filter. $chunk keys are data-row offsets
+     * (0 = the row under the header).
+     *
+     * @return array{keyed: array<int, array{key: mixed, assoc: array<string, mixed>}>, keyless: array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>}
+     */
+    private function prepareRows(SheetImportable $model, array $headers, array $chunk, ?array $allowed): array
+    {
+        $prepared = ['keyed' => [], 'keyless' => []];
+        $keyIndex = $model->getSheetKeyColumnIndex();
+
+        foreach ($chunk as $offset => $row) {
+            if ($this->trimRow($row) === []) {
+                continue; // blank line
+            }
+
+            $keyValue = $this->normalizeKey($row[$keyIndex] ?? null);
             $assoc = $this->transformer->parseRow($this->rowToAssoc($headers, $row));
+            $assoc[$model->getSheetKeyColumn()] = $keyValue;
 
-            $keyValue = $assoc[$keyColumn] ?? null;
-            if (is_float($keyValue) && floor($keyValue) === $keyValue) {
-                $keyValue = (int) $keyValue; // typed (unformatted) reads return numbers
-            }
             if ($keyValue === null) {
-                // A row without a primary key cannot be matched; skip it.
+                if ($allowed === null) {
+                    $prepared['keyless'][$offset + 2] = ['raw' => $row, 'assoc' => $assoc];
+                }
+
                 continue;
             }
 
-            if ($allowed !== null && ! in_array((string) $keyValue, $allowed, true)) {
-                continue;
+            if ($this->isAcceptedKey($model, $keyValue, $allowed)) {
+                $prepared['keyed'][] = ['key' => $keyValue, 'assoc' => $assoc];
             }
-
-            $prepared[] = ['key' => $keyValue, 'assoc' => $assoc];
         }
 
         return $prepared;
+    }
+
+    private function isAcceptedKey(SheetImportable $model, mixed $keyValue, ?array $allowed): bool
+    {
+        if ($model->getKeyType() === 'int' && ! is_int($keyValue) && ! ctype_digit((string) $keyValue)) {
+            $this->logger->warning('Skipping sheet row with a non-integer key ['.$keyValue.'] for '.get_class($model));
+
+            return false;
+        }
+
+        return $allowed === null || in_array((string) $keyValue, $allowed, true);
+    }
+
+    /**
+     * Key cell -> key value: typed reads return numbers, text is trimmed,
+     * blank -> null.
+     */
+    public function normalizeKey(mixed $value): int|string|null
+    {
+        if (is_float($value) && floor($value) === $value) {
+            return (int) $value;
+        }
+
+        $value = is_string($value) ? trim($value) : $value;
+
+        return ($value === null || $value === '') ? null : $value;
+    }
+
+    /**
+     * Row values without trailing blanks (Google trims them on read).
+     *
+     * @return array<int, mixed>
+     */
+    public function trimRow(array $row): array
+    {
+        $row = array_values($row);
+        while ($row !== [] && (end($row) === '' || end($row) === null)) {
+            array_pop($row);
+        }
+
+        return $row;
+    }
+
+    /**
+     * Upsert the keyed rows and create the keyless ones of one chunk.
+     *
+     * @return array<int, mixed>  persisted primary keys
+     */
+    private function persistChunk(SheetImportable $model, array $rows): array
+    {
+        $ids = $this->persist(get_class($model), $rows['keyed']);
+
+        foreach ($this->createFromSheetRows($model, $rows['keyless']) as $record) {
+            $ids[] = $record->getKey();
+        }
+
+        return $ids;
     }
 
     /**
