@@ -26,6 +26,9 @@ class StateManager
     /** Slack past defaults.timeout before a `running` run counts as abandoned. */
     public const ABANDON_GRACE_SECONDS = 60;
 
+    /** Rows per tracking insert: stays under SQLite's bound-parameter limit (32 766). */
+    public const WRITE_BATCH = 500;
+
     public function __construct(
         private readonly SyncLogger $logger
     ) {
@@ -82,6 +85,25 @@ class StateManager
     }
 
     /**
+     * End the model's runs still `running` now, e.g. from a queue job's
+     * failed() when the worker times it out (the process is about to be
+     * killed, so the run would otherwise wait for failAbandonedRuns()).
+     */
+    public function failRunningRuns(string $modelClass, string $error): int
+    {
+        $running = SyncState::query()
+            ->where('model_class', $modelClass)
+            ->where('status', 'running')
+            ->get();
+
+        foreach ($running as $syncState) {
+            $this->failSync($syncState, $error);
+        }
+
+        return $running->count();
+    }
+
+    /**
      * Record successful sync for a batch of records
      */
     public function recordBatchSync(SyncState $syncState, array $recordIds): void
@@ -99,7 +121,9 @@ class StateManager
             ];
         }, $recordIds);
 
-        $this->tracking()->table('sync_entries')->insert($entries);
+        foreach (array_chunk($entries, self::WRITE_BATCH) as $batch) {
+            $this->tracking()->table('sync_entries')->insert($batch);
+        }
 
         $syncState->update([
             'total_processed' => $syncState->total_processed + count($recordIds),
@@ -194,10 +218,12 @@ class StateManager
             ];
         }
 
-        $this->tracking()->table('sync_snapshots')->upsert(
-            $rows,
-            ['model_class', 'record_id'],
-            ['content_hash', 'sheet_hash', 'synced_at', 'updated_at']
-        );
+        foreach (array_chunk($rows, self::WRITE_BATCH) as $batch) {
+            $this->tracking()->table('sync_snapshots')->upsert(
+                $batch,
+                ['model_class', 'record_id'],
+                ['content_hash', 'sheet_hash', 'synced_at', 'updated_at']
+            );
+        }
     }
 }

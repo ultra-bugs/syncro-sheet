@@ -238,17 +238,27 @@ class Importer
      */
     public function createFromSheetRows(SheetImportable $model, array $rows, ?callable $writeBack = null): array
     {
-        $rows = array_filter($rows, fn (array $row) => $this->canCreateFromSheetRow($model, $row['assoc']));
-        $rows = $this->stillUnchanged($model, $rows);
+        // The gate and the attributes once per row (fromSheetRow() may query).
+        $attributes = [];
+        foreach ($rows as $rowIndex => $row) {
+            if (method_exists($model, 'canImportSheetRow') && ! $model->canImportSheetRow($row['assoc'])) {
+                continue;
+            }
+            if (($values = $this->newRecordAttributes($model, $row['assoc'])) !== []) {
+                $attributes[$rowIndex] = $values;
+            }
+        }
+
+        $rows = $this->stillUnchanged($model, array_intersect_key($rows, $attributes));
         if (empty($rows)) {
             return [];
         }
 
-        return $model->getConnection()->transaction(function () use ($model, $rows, $writeBack) {
+        return $model->getConnection()->transaction(function () use ($model, $rows, $attributes, $writeBack) {
             $created = [];
-            foreach ($rows as $rowIndex => $row) {
+            foreach (array_keys($rows) as $rowIndex) {
                 $record = $model->newInstance();
-                $record->fill($this->newRecordAttributes($record, $row['assoc']))->save();
+                $record->fill($attributes[$rowIndex])->save();
                 $created[$rowIndex] = $record;
             }
 

@@ -191,11 +191,9 @@ class Reconciler
             $newBaseline[$pk]['db'] = $dbHash;
         }
         $this->applyExports($model, $exports);
-        foreach ($this->applyCreates($model, $toCreate, $codec) as $pk => $hashes) {
-            $pks[] = $pk;
-            $newBaseline[$pk] = $hashes;
-        }
         $this->stateManager->storeSnapshots($modelClass, $newBaseline);
+        // Created rows store their own baselines, chunk by chunk.
+        array_push($pks, ...$this->applyCreates($model, $toCreate, $codec));
 
         return $pks;
     }
@@ -205,8 +203,13 @@ class Reconciler
      * back onto each row: the row is what the person typed (formulas, blanks,
      * spacing) and stays as is. The baseline keeps each side's own form.
      *
+     * Rows go in chunks of defaults.reconcile.create_chunk. Each chunk creates
+     * its records, writes their keys and stores their baselines in one DB
+     * transaction, so a run cut short (time limit, crash) keeps the chunks it
+     * finished and the next run creates the rest.
+     *
      * @param  array<int, array{rowIndex: int, raw: array, assoc: array, sheetAssoc?: array, hashColumns: array<int, string>}>  $toCreate
-     * @return array<int|string, array{db: string, sheet: string}>  new pk => baseline
+     * @return array<int, int|string>  the new primary keys
      */
     private function applyCreates(SheetSyncable $model, array $toCreate, DataTransformer $codec): array
     {
@@ -214,17 +217,38 @@ class Reconciler
             return [];
         }
 
+        $pks = [];
+        $chunk = max(1, (int) config('syncro-sheet.defaults.reconcile.create_chunk', 500));
+        foreach (array_chunk($toCreate, $chunk, true) as $part) {
+            array_push($pks, ...$this->createChunk($model, $part, $codec));
+        }
+
+        return $pks;
+    }
+
+    /**
+     * @param  array<int, array{rowIndex: int, raw: array, assoc: array, sheetAssoc?: array, hashColumns: array<int, string>}>  $toCreate
+     * @return array<int, int|string>
+     */
+    private function createChunk(SheetSyncable $model, array $toCreate, DataTransformer $codec): array
+    {
         $headers = $this->resolveHeaders($model);
-        $hashes = [];
         $rows = array_map(static fn (array $payload) => ['raw' => $payload['raw'], 'assoc' => $payload['assoc']], $toCreate);
 
         $keyColumn = $model->getSheetKeyColumn();
         $keyIndex = $model->getSheetKeyColumnIndex();
 
-        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, $codec, $keyColumn, $keyIndex, &$hashes) {
+        $created = $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, $codec, $keyColumn, $keyIndex) {
+            // Reloaded in one query (DB defaults, casts, eager loads), as the next run reads them.
+            $fresh = $model->newQuery()
+                ->whereKey(array_map(static fn (Model $record) => $record->getKey(), array_values($records)))
+                ->get()
+                ->keyBy(fn (Model $record) => (string) $record->getKey());
+
             $updates = [];
+            $hashes = [];
             foreach ($records as $rowIndex => $record) {
-                $record = $record->fresh() ?? $record; // DB defaults / casts, as the next run reads it
+                $record = $fresh[(string) $record->getKey()] ?? $record;
                 $hashColumns = $toCreate[$rowIndex]['hashColumns'];
                 $dbHash = $codec->canonicalHash($codec->recordToAssoc($record, $headers), $hashColumns);
 
@@ -242,9 +266,10 @@ class Reconciler
             }
 
             $this->googleClient->updateRows($model->getSheetIdentifier(), $model->getSheetName(), $updates);
+            $this->stateManager->storeSnapshots($model::class, $hashes);
         });
 
-        return $hashes;
+        return array_values(array_map(static fn (Model $record) => $record->getKey(), $created));
     }
 
     /**

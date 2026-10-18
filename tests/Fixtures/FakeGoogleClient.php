@@ -45,6 +45,11 @@ class FakeGoogleClient extends GoogleClient
     /** When true, updateRows() fails like an API error. */
     public bool $failUpdates = false;
 
+    /** updateRows() calls so far; with $failUpdatesFrom = n, the n-th call and later fail. */
+    public int $updateCalls = 0;
+
+    public ?int $failUpdatesFrom = null;
+
     public function __construct()
     {
         // Intentionally bypass the real GoogleClient dependencies.
@@ -99,7 +104,8 @@ class FakeGoogleClient extends GoogleClient
 
     public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
     {
-        if ($this->failUpdates) {
+        $this->updateCalls++;
+        if ($this->failUpdates || ($this->failUpdatesFrom !== null && $this->updateCalls >= $this->failUpdatesFrom)) {
             throw new \Zuko\SyncroSheet\Exceptions\GoogleSheetsException('Simulated API failure');
         }
 

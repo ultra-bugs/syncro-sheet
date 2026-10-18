@@ -25,7 +25,7 @@ return [
         'batch_size' => 100,
         'direction' => 'export',        // data flow: export (DB->Sheet) | import (Sheet->DB) | bidirectional
         'source_of_truth' => 'db',      // db | sheet — winning side on conflict (bidirectional, Phase 2)
-        'timeout' => 600,
+        'timeout' => (int) env('SYNCRO_SHEET_TIMEOUT', 600), // seconds; a queue's retry_after must be longer
         'retries' => 3,
 
         'export' => [
@@ -45,6 +45,10 @@ return [
             // two-way reconcile (volatile fields that would otherwise mark every
             // record as "changed"). Models may override via syncHashIgnore().
             'hash_ignore' => ['updated_at'],
+            // Sheet rows without a key are created in chunks of this many,
+            // each chunk committed with its keys written back: a run cut
+            // short keeps what it finished.
+            'create_chunk' => 500,
         ],
     ],
 
