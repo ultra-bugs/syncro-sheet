@@ -69,6 +69,28 @@ class Reconciler
     }
 
     /**
+     * What a run would do now, without writing anything (counts of decide()):
+     * rows to create from the sheet, records to import / update in place /
+     * append, and records that agree and only get a baseline.
+     *
+     * @return array{create: int, import: int, update: int, append: int, baseline: int}
+     */
+    public function preview(string $modelClass): array
+    {
+        $plan = $this->decide($modelClass);
+        $counts = ['create' => 0, 'import' => 0, 'update' => 0, 'append' => 0, 'baseline' => count($plan['seeds'])];
+
+        foreach ($plan['decisions'] as $decision) {
+            $counts[match ($decision['action']) {
+                'create', 'import' => $decision['action'],
+                default => ($decision['payload']['rowIndex'] ?? null) !== null ? 'update' : 'append',
+            }]++;
+        }
+
+        return $counts;
+    }
+
+    /**
      * Decision phase: read both sides + baseline and resolve the winner per
      * record. Pure (reads only, no writes) so a dispatcher can run it centrally
      * and then fan the resulting plan out to apply jobs.
@@ -293,7 +315,7 @@ class Reconciler
             } elseif ($winner === 'sheet') {
                 $decisions[] = ['pk' => $pk, 'action' => 'import', 'payload' => ['assoc' => $sheet['assoc'], 'hashColumns' => $layout['hash']], 'hash' => $sheet['hash']];
             } else {
-                $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow, $codec);
+                $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow, $codec, $sheet['assoc'] ?? null);
                 $decisions[] = ['pk' => $pk, 'action' => 'export', 'payload' => $payload, 'hash' => $db['hash']];
             }
         }
@@ -302,11 +324,15 @@ class Reconciler
     }
 
     /**
-     * Cells to write for a db-wins record: only the writable columns of an
-     * existing row; every mapped column (plus header bootstrap) for a new row,
-     * which gets the next free row number so queued chunks stay order-free.
+     * Cells to write for a db-wins record. A new row gets every mapped column
+     * (plus header bootstrap) and the next free row number, so queued chunks
+     * stay order-free. An existing row gets only the writable cells whose
+     * value differs from what the sheet holds: an unchanged cell (a formula
+     * whose value still matches, say) is left as it is.
+     *
+     * @param  array<string, mixed>|null  $sheetAssoc  the row as read (existing rows)
      */
-    private function exportPayload(Model $record, array $headers, array $layout, ?int $rowIndex, int &$nextRow, DataTransformer $codec): array
+    private function exportPayload(Model $record, array $headers, array $layout, ?int $rowIndex, int &$nextRow, DataTransformer $codec, ?array $sheetAssoc = null): array
     {
         $columns = $rowIndex === null ? $layout['columns'] : $layout['writable'];
         $assoc = $codec->recordToAssoc($record, $headers);
@@ -314,6 +340,14 @@ class Reconciler
             array_values($columns),
             $codec->formatRow($assoc, array_keys($columns))
         );
+
+        if ($rowIndex !== null && $sheetAssoc !== null) {
+            foreach ($columns as $header => $column) {
+                if ($codec->canonicalHash($assoc, [$header]) === $codec->canonicalHash($sheetAssoc, [$header])) {
+                    unset($cells[$column]);
+                }
+            }
+        }
 
         return [
             'rowIndex' => $rowIndex,

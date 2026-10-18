@@ -27,7 +27,8 @@ class SheetSyncCommand extends Command
                           {--ids=* : Specific record IDs for partial sync}
                           {--M|mode= : Sync mode (append/replace)}
                           {--D|direction=export : Sync direction (export: DB->Sheet, import: Sheet->DB, both: two-way reconcile)}
-                          {--F|force : using replace mode}';
+                          {--F|force : using replace mode}
+                          {--dry-run : With --direction=both: show what the run would do, write nothing}';
 
     protected $description = 'Sync model data with Google Sheets';
 
@@ -45,6 +46,10 @@ class SheetSyncCommand extends Command
         $mode = $this->option('mode');
         if (! $mode && $this->option('force')) {
             $mode = 'replace';
+        }
+
+        if ($this->option('dry-run')) {
+            return $this->preview($syncManager, $modelClass, $direction);
         }
 
         try {
@@ -95,6 +100,34 @@ class SheetSyncCommand extends Command
         $this->info("Starting partial import for {$modelClass} with IDs: ".implode(', ', $ids));
 
         return $syncManager->importPartial($modelClass, $ids, ['write_mode' => $mode]);
+    }
+
+    private function preview(SyncManager $syncManager, string $modelClass, string $direction): int
+    {
+        if (! in_array($direction, ['both', SyncManager::DIRECTION_BIDIRECTIONAL], true)) {
+            $this->error('--dry-run needs --direction=both');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $counts = $syncManager->preview($modelClass);
+        } catch (\Throwable $e) {
+            $this->error("Preview failed: {$e->getMessage()}");
+
+            return self::FAILURE;
+        }
+
+        $this->info("Dry run of the two-way sync for {$modelClass} (nothing written):");
+        $this->table(['Action', 'Records'], [
+            ['create from sheet rows without a key', $counts['create']],
+            ['import sheet changes into the DB', $counts['import']],
+            ['update sheet rows in place', $counts['update']],
+            ['append DB records to the sheet', $counts['append']],
+            ['already in sync, baseline only', $counts['baseline']],
+        ]);
+
+        return self::SUCCESS;
     }
 
     private function runBidirectional(SyncManager $syncManager, string $modelClass, ?string $mode)

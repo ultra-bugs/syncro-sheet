@@ -178,6 +178,21 @@ class SyncManager
         }
     }
 
+    /**
+     * Dry run of sync(): what the two-way reconcile would do now, nothing
+     * written and no run recorded (see Reconciler::preview()).
+     *
+     * @return array{create: int, import: int, update: int, append: int, baseline: int}
+     */
+    public function preview(string $modelClass): array
+    {
+        $this->validateModel($modelClass);
+        $this->validateImportable($modelClass);
+        $this->assertBidirectionalPrimaryKey($modelClass);
+
+        return $this->reconciler->preview($modelClass);
+    }
+
     private function validateModel(string $modelClass): void
     {
         if (! class_exists($modelClass)) {

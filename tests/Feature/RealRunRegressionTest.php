@@ -188,8 +188,9 @@ class RealRunRegressionTest extends TestCase
         TestLedger::find(1)->update(['amount' => 11]);
         $this->sync();
 
-        // amount (A), note (B), id (E): never the blank column C or read-only total (D).
-        $this->assertSame([0, 1, 4], array_keys($this->fakeClient->updatedByIndex[2]));
+        // Only the changed amount (A): never the blank column C or the read-only
+        // total (D), nor writable cells that still hold the DB value (note, id).
+        $this->assertSame([0 => 11.0], $this->fakeClient->updatedByIndex[2]);
     }
 
     public function test_empty_sheet_gets_the_header_row_before_rows(): void

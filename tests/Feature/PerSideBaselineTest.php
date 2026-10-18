@@ -21,6 +21,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Zuko\SyncroSheet\Models\SyncState;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\SyncManager;
 use Zuko\SyncroSheet\Services\TrackingDatabase;
@@ -113,6 +114,42 @@ class PerSideBaselineTest extends TestCase
 
         $this->fakeClient->sheetValues = [self::HEADER, [10, 'from the app', '', 10, $ledger->id]];
         $this->assertSame(0, $this->sync());
+    }
+
+    public function test_a_db_edit_writes_only_the_cells_it_changes(): void
+    {
+        // A2 holds a formula the sheet shows as 10 (read UNFORMATTED: 10).
+        $ledger = TestLedger::create(['amount' => 10, 'note' => 'a']);
+        $this->fakeClient->sheetValues = [self::HEADER, [10, 'a', '', 10, $ledger->id]];
+        $this->sync();
+
+        $ledger->update(['note' => 'b']);
+        $this->assertSame(1, $this->sync());
+
+        $this->assertSame([2 => [1 => 'b']], $this->fakeClient->updatedByIndex, 'the amount cell (same value) is not rewritten');
+        $this->fakeClient->sheetValues = [self::HEADER, [10, 'b', '', 10, $ledger->id]];
+        $this->assertSame(0, $this->sync());
+    }
+
+    public function test_a_preview_counts_without_writing(): void
+    {
+        $synced = TestLedger::create(['amount' => 10, 'note' => 'a']);
+        TestLedger::create(['amount' => 20, 'note' => 'db only']);
+        $this->fakeClient->sheetValues = [self::HEADER, [10, 'a', '', 10, $synced->id], [5, 'typed', '', 5]];
+
+        $counts = app(SyncManager::class)->preview(TestLedger::class);
+
+        $this->assertSame(['create' => 1, 'import' => 0, 'update' => 0, 'append' => 1, 'baseline' => 1], $counts);
+        $this->assertSame([], $this->fakeClient->appended);
+        $this->assertSame([], $this->fakeClient->updatedByIndex);
+        $this->assertSame(2, TestLedger::count());
+        $this->assertSame(0, SyncState::count());
+        $this->assertSame(0, DB::connection(TrackingDatabase::connectionName())->table('sync_snapshots')->count());
+
+        $this->artisan('sheet:sync', ['model' => TestLedger::class, '--direction' => 'both', '--dry-run' => true])
+            ->expectsOutputToContain('nothing written')
+            ->assertSuccessful();
+        $this->assertSame([], $this->fakeClient->appended);
     }
 
     public function test_a_baseline_without_sheet_hash_counts_for_both_sides(): void

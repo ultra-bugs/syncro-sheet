@@ -123,7 +123,7 @@ $scenarios = [
         $first = T::orderBy('id')->first();
         $row = $o->values('A' . $o->rowOf($first->id) . ':Y')[0] ?? [];
         Report::check('S1', 'Dep cell is a number (formulas/pivots can sum it)', is_int($row[3] ?? null) || is_float($row[3] ?? null), $row[3] ?? null);
-        Report::check('S1', 'Date_Converted round-trips', ($row[8] ?? null) === $first->processed_at->format('Y-m-d H:i:s'), $row[8] ?? null);
+        Report::check('S1', 'Date_Converted round-trips', ($row[8] ?? null) === $first->processed_at->format(T::SHEET_DATE_CONVERTED_FORMAT), $row[8] ?? null);
     },
     'S2' => function (Oracle $o, array &$ctx) {
         $before = $o->values();
