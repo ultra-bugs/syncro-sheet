@@ -332,6 +332,8 @@ notes are in the linked plan docs.
 | S17 | (design) a row moved between plan and apply could receive a wrong id | rows re-read before the write-back; creates + write-back in one DB transaction |
 | S17, round 5 | A 429 failed the run: default throttle 100/min > Google's 60/min/user | default 60/min, 429/5xx retried with backoff; throttle waited on the newest instead of the oldest request |
 | round 7 | "not synced in 7 days" export filter compared `record_id` with `sync_entries.id` | qualified model key; works across connections ([model hooks + tracking](../../agent-plans/20261018_model-hooks-and-tracking-connection.md)) |
+| copy of the production tab, after round 9 | First run on 5 548 rows: re-reading the 4 102 created rows in one `values.batchGet` → 413 | rows re-read in spans, ≤ 100 per request ([production tab rehearsal](../../agent-plans/20261018_production-tab-rehearsal.md)) |
+| copy of the production tab, after round 9 | The create write-back rewrote whole rows with the normalised record (4 206 cells: formulas → values, `0` → blank, milliseconds, trailing spaces, a default site) | only the key is written; a baseline per side (`sheet_hash`) |
 | admin panel, after round 8 | Without `GOOGLE_SERVICE_ENABLED` the client called a missing `TokenManager::getToken()`; the `\Error` escaped `catch (\Exception)`, and failed full / import / two-way runs were never marked failed → run stuck at `running`, 0 records | `\Throwable` caught, run always marked failed, dead-worker runs ended by the next run, clear "no credentials" error, `syncro-sheet.google.credentials` ([failed runs + credentials](../../agent-plans/20261018_failed-runs-and-credentials.md)) |
 
 ## 8. Results
@@ -344,6 +346,7 @@ notes are in the linked plan docs.
 | 7 | `7f9a6dc` model hooks, tracking tables on SQLite | 49 | 1 |
 | 8 | `7f9a6dc`, this published harness | 48 | 0 |
 | 9 | `5db9bd7` failed runs + package credentials; no `GOOGLE_SERVICE_*` in the environment | 48 | 0 |
+| 10 | `638897e` per-side baselines, key-only write-back, `readRows()` in spans | 48 | 0 |
 
 In rounds 4–7 the single failure was an app check (S15). It exercised the
 app's own legacy observer push, which writes invalid tracking rows. That
@@ -352,14 +355,25 @@ Round 7 also re-ran a subset with `SYNCRO_SHEET_DB_CONNECTION=pgsql`: 18/18.
 
 Timings on PGlite (WASM PostgreSQL, so slower than a real server), live API:
 
-| Run | Records | Round 7 | Round 8 | Round 9 |
-|---|---|---|---|---|
-| initial sync (S1) | 100 | 1.3 s | 0.7 s | 0.8 s |
-| no-op / single edit (S2–S6) | 100 | 0.2–0.5 s | 0.2–0.5 s | 0.2–0.6 s |
-| ledger tab, 37 rows created + ids written back (S16) | 43 rows | 1.8 s | 1.8 s | 4.3 s |
-| scale initial (S14) | 3 782 | 4.1 s | 3.8 s | 3.3 s |
-| scale no-op | 3 782 | 1.7 s | 1.6 s | 1.5 s |
-| scale single edit | 3 782 | 2.3 s | 1.6 s | 1.6 s |
+| Run | Records | Round 7 | Round 8 | Round 9 | Round 10 |
+|---|---|---|---|---|---|
+| initial sync (S1) | 100 | 1.3 s | 0.7 s | 0.8 s | 0.8 s |
+| no-op / single edit (S2–S6) | 100 | 0.2–0.5 s | 0.2–0.5 s | 0.2–0.6 s | 0.4–0.6 s |
+| ledger tab, 37 rows created + ids written back (S16) | 43 rows | 1.8 s | 1.8 s | 4.3 s | 1.8 s |
+| scale initial (S14) | 3 782 | 4.1 s | 3.8 s | 3.3 s | 3.3 s |
+| scale no-op | 3 782 | 1.7 s | 1.6 s | 1.5 s | 1.6 s |
+| scale single edit | 3 782 | 2.3 s | 1.6 s | 1.6 s | 2.0 s |
+
+**Rehearsal on a copy of the production tab** (after round 10, `duplicateSheet`
+of the 5 548-row ledger: values, formulas, formatting; DB emptied, the sheet as
+the full history):
+
+| | Result |
+|---|---|
+| first run | 4 102 records created in 160 s on PGlite (~50k small queries) |
+| cells changed on the copy | 4 102, all in X (the ids) |
+| rows left without an id | 1 033 day labels / totals / blanks, 135 without an amount, 50 without a valid date, 227 whose account is unknown |
+| second run | 0 processed, 2.2 s |
 
 Round 9 then drove the admin-panel job (`RunTransactionSheetSyncJob`) three
 times on the test tab: with the module's credentials it completed, and a run
@@ -405,12 +419,14 @@ Round 7, abridged:
 
 ## 9. Normalisation to expect
 
-- **Precision.** `Date_Converted` typed with milliseconds
-  (`…20.092`) comes back as `…20`, because the column is `timestamp(0)`. A
-  row created from the sheet is written back with the record's own values,
-  so every lossy attribute shows up once (37 cells in S16), and never again.
-- **Formulas outside read-only columns are overwritten** when the sync
-  writes a row back. List every formula column in `syncReadOnlyColumns()`.
+- **Precision.** `Date_Converted` typed with milliseconds (`…20.092`) is
+  stored as `…20`, because the column is `timestamp(0)`. The sheet keeps what
+  was typed: a row created from the sheet gets only its id (S16, rounds 1–9:
+  37 cells rewritten; round 10: 0), and each side is compared with its own
+  baseline, so the difference is not a change.
+- **Formulas outside read-only columns are overwritten** when a record
+  changes in the DB and its row is written back. List every formula column in
+  `syncReadOnlyColumns()`.
 - **First sync of an existing tab.** Rows that already agree with the DB are
   only baselined. Rows that differ are resolved by the source of truth.
 - **One writer.** Do not run another process that writes the same tab (here,

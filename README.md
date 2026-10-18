@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`5db9bd7`](https://github.com/ultra-bugs/syncro-sheet/commit/5db9bd794ff8ba78fa0096a8ca1dab7fbd557b80)
+**Last updated:** 2026-10-18 · verified against [`638897e`](https://github.com/ultra-bugs/syncro-sheet/commit/638897eef45b52b707fc3bb506f71aa1ee28d579)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -313,8 +313,9 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 >   instance), so it can merge into attributes it already holds (e.g.
 >   `array_merge($this->metadata ?? [], [...])`).
 > - Soft-deleted records are left alone: never re-created, never updated.
-> - **Rows without a key** (typed on the sheet) are created in the DB and the
->   new key is written back into their key cell, so they match from then on.
+> - **Rows without a key** (typed on the sheet) are created in the DB and only
+>   the new key is written back, into their key cell. The rest of the row stays
+>   as typed (formulas, blanks, spacing), and the rows match from then on.
 >   Whether a row may become a record is the model's call:
 >   `InteractsWithSheet::canImportSheetRow()` asks the model's
 >   `shouldImportSheetRow(array $row): bool` hook when it defines one (date
@@ -377,9 +378,13 @@ php artisan sheet:sync Product --direction=both
 
 How it decides, per record (matched by primary key):
 
-- A content-hash **baseline** of each record's last-synced state is kept in the
-  `sync_snapshots` table. The reconciler compares the current DB-side and
-  sheet-side hashes against that baseline.
+- A content-hash **baseline per side** is kept in `sync_snapshots`:
+  `content_hash` is the DB side's form at the last sync and `sheet_hash` the
+  sheet side's form. Each side is compared with its own baseline, so the two
+  can differ in normalisation without counting as a change: trailing spaces,
+  `0` against a blank cell, a formula against its value, a timestamp's
+  precision. Rows written before `sheet_hash` existed use `content_hash` for
+  both sides.
 - Only the DB changed → the sheet row is updated in place; only the sheet
   changed → the record is upserted into the DB.
 - **Both changed (a real conflict)** → the **source of truth** wins. Set it per
@@ -596,8 +601,9 @@ public function getBatchSize(): int
 
 3. **One writer per tab**: do not let another process (an observer pushing
    rows, a script) write the same tab while a two-way sync runs. List every
-   formula column in `syncReadOnlyColumns()` — other columns are rewritten
-   from the DB when a row is written back.
+   formula column in `syncReadOnlyColumns()`. When a record changes in the
+   DB, its row's other columns are rewritten from the DB, a formula there
+   included.
 
 4. **Verify on your own sheet**: the [real-run harness](docs/examples/real-run/README.md)
    can be adapted to your model; each scenario edits one side, syncs, checks

@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`5db9bd7`](https://github.com/ultra-bugs/syncro-sheet/commit/5db9bd794ff8ba78fa0096a8ca1dab7fbd557b80)
+**Last updated:** 2026-10-18 · verified against [`638897e`](https://github.com/ultra-bugs/syncro-sheet/commit/638897eef45b52b707fc3bb506f71aa1ee28d579)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -56,7 +56,7 @@ the overlapping-sounding terms.
 | **StateManager** | service | Owns ALL tracking tables: SyncState + SyncEntry + SyncSnapshot | — |
 | **SyncState** | model | One run: direction, sync_type, write_mode, status, counters | SyncEntry |
 | **SyncEntry** | model | Per-record result within a run (audit/history) | SyncSnapshot |
-| **SyncSnapshot** | model | Current content-hash baseline per record (reconcile) | a per-run log |
+| **SyncSnapshot** | model | Current content-hash baseline per record and side (reconcile) | a per-run log |
 | **GoogleClient** | service | revolution wrapper: read/append/updateRows/headers/clear + rate limit | — |
 | **SyncManager** | service | Orchestrator/entry: fullSync/partialSync, importFull/importPartial, sync | SyncScheduler |
 | **TrackingDatabase** | service | Resolves (in boot) where the tracking tables live: configured connection, own SQLite file, or app default (+ warning) | StateManager |
@@ -145,11 +145,14 @@ declares what it needs:
 
 #### `Reconciler` (Sheet ⇄ DB)
 - Two-way reconcile engine for bidirectional models (`SheetSyncable`)
-- Matches by primary key; detects which side changed vs. a content-hash
-  **baseline**; resolves genuine conflicts by a fixed source-of-truth
+- Matches by primary key; detects which side changed, each side against its
+  own content-hash **baseline** (`content_hash` = DB side, `sheet_hash` = sheet
+  side, so normalisation differences are not changes); resolves genuine
+  conflicts by a fixed source-of-truth
   (`getSyncSourceOfTruth()` / `config('syncro-sheet.defaults.source_of_truth')`)
-- Plan actions: `export` (update in place / append), `import` (upsert), `create`
-  (sheet row without a key → record + key written back)
+- Plan actions: `export` (update in place / append), `import` (upsert; the
+  imported record's hash becomes the DB baseline), `create` (sheet row without
+  a key → record; only the key cell is written back, the row stays as typed)
 - Writes DB→sheet via sparse `GoogleClient::updateRows()` (one
   `values.batchUpdate`, read-only columns skipped) + `appendRows()` for new
   rows, and sheet→DB via `Importer::upsertRow()`; never deletes
@@ -172,7 +175,8 @@ declares what it needs:
 - Owns **all** tracking tables and is the only service that writes them:
   - `SyncState` — status/history of each run
   - `SyncEntry` — per-record result within a run
-  - `SyncSnapshot` — current content-hash baseline per record (reconcile)
+  - `SyncSnapshot` — current content-hash baseline per record: `content_hash`
+    (DB side), `sheet_hash` (sheet side; null = same as `content_hash`)
 - Run lifecycle: `initializeSync()` / `recordBatchSync()` / `completeSync()` / `failSync()`
 - `failAbandonedRuns()` (called by `initializeSync()`): the model's runs still
   `running` past `defaults.timeout` + 60 s are marked failed (`Abandoned: …`)
@@ -225,7 +229,8 @@ class SyncEntry extends Model
 - Every call is scoped to a **quoted** sheet name with a fresh range (the
   underlying client is shared and stateful)
 - `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed);
-  `readRows()` re-reads given rows in one `values.batchGet`
+  `readRows()` re-reads given rows merged into spans (gaps ≤ 50 rows), at most
+  100 spans per `values.batchGet` (a GET: its ranges travel in the URL)
 - `appendRows()` appends positional rows anchored on `A{lastRow+1}`;
   `updateRows()` writes sparse cell maps of many rows in one
   `values.batchUpdate` (adjacent columns grouped into one range)
