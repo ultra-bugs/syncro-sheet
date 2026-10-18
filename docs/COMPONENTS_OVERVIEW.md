@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`638897e`](https://github.com/ultra-bugs/syncro-sheet/commit/638897eef45b52b707fc3bb506f71aa1ee28d579)
+**Last updated:** 2026-10-18 · verified against [`a046c9e`](https://github.com/ultra-bugs/syncro-sheet/commit/a046c9e9c5c28d06c860ab353fc54e6046690661)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -156,8 +156,12 @@ declares what it needs:
 - Writes DB→sheet via sparse `GoogleClient::updateRows()` (one
   `values.batchUpdate`, read-only columns skipped) + `appendRows()` for new
   rows, and sheet→DB via `Importer::upsertRow()`; never deletes
+- In-place exports write only the writable cells whose canonical value
+  differs from the row as read (a formula whose value still matches is kept)
 - Public API: `reconcile()` (driven by `SyncManager::sync()`), `decide()` +
-  `applyChunk()` (the queue driver runs them separately)
+  `applyChunk()` (the queue driver runs them separately), `preview()` (counts
+  of `decide()`, nothing written; `SyncManager::preview()`,
+  `sheet:sync --direction=both --dry-run`)
 
 #### `DataTransformer` (value codec, per model)
 - Resolved per model: `DataTransformer::forModel($model)` → the model's

@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`638897e`](https://github.com/ultra-bugs/syncro-sheet/commit/638897eef45b52b707fc3bb506f71aa1ee28d579)
+**Last updated:** 2026-10-18 · verified against [`a046c9e`](https://github.com/ultra-bugs/syncro-sheet/commit/a046c9e9c5c28d06c860ab353fc54e6046690661)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -376,6 +376,23 @@ $syncState = SyncroSheet::sync(Product::class); // direction = 'bidirectional'
 php artisan sheet:sync Product --direction=both
 ```
 
+**Dry run first** on a tab that already holds data: `preview()` reads both
+sides and reports what a run would do, without writing anything or recording
+a run.
+
+```php
+app(\Zuko\SyncroSheet\Services\SyncManager::class)->preview(Product::class);
+// ['create' => 4102, 'import' => 0, 'update' => 0, 'append' => 0, 'baseline' => 0]
+```
+
+```bash
+php artisan sheet:sync Product --direction=both --dry-run
+```
+
+A first run that would both `create` (sheet rows without a key) and `append`
+(DB records not on the sheet) usually means two copies of the same history.
+Settle which side is complete before running it.
+
 How it decides, per record (matched by primary key):
 
 - A content-hash **baseline per side** is kept in `sync_snapshots`:
@@ -385,8 +402,10 @@ How it decides, per record (matched by primary key):
   `0` against a blank cell, a formula against its value, a timestamp's
   precision. Rows written before `sheet_hash` existed use `content_hash` for
   both sides.
-- Only the DB changed → the sheet row is updated in place; only the sheet
-  changed → the record is upserted into the DB.
+- Only the DB changed → the sheet row is updated in place, **cell by cell**:
+  only the writable cells whose value differs from the sheet are written, so
+  a formula whose value still matches is kept. Only the sheet changed → the
+  record is upserted into the DB.
 - **Both changed (a real conflict)** → the **source of truth** wins. Set it per
   model with `getSyncSourceOfTruth(): string` (`'db'` or `'sheet'`), falling back
   to `config('syncro-sheet.defaults.source_of_truth')`.
@@ -602,8 +621,8 @@ public function getBatchSize(): int
 3. **One writer per tab**: do not let another process (an observer pushing
    rows, a script) write the same tab while a two-way sync runs. List every
    formula column in `syncReadOnlyColumns()`. When a record changes in the
-   DB, its row's other columns are rewritten from the DB, a formula there
-   included.
+   DB, only the cells whose value changed are written; a formula elsewhere is
+   replaced only if the DB changes that cell's value.
 
 4. **Verify on your own sheet**: the [real-run harness](docs/examples/real-run/README.md)
    can be adapted to your model; each scenario edits one side, syncs, checks

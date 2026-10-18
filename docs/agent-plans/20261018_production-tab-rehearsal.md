@@ -69,3 +69,30 @@ New tests:
 - an existing SQLite file is migrated on the next boot.
 
 `test_rows_are_re_read…` and 3 of the 4 baseline tests fail on the previous code.
+
+### Follow-up: day-to-day edits on the copy, preview
+
+Simulating use after the cut-over showed one more rewrite:
+
+| # | Defect | Fix (`a046c9e`) |
+|---|---|---|
+| D7 | An app edit of one field wrote every writable cell of its row: `D51 =50+20` → `70`, `J51` lost `.000`. | An in-place export writes only the writable cells whose canonical value differs from the row as read. Fitly also writes `Date_Converted` as the ledger does (`Y-m-d H:i:s.v`). |
+
+Added `Reconciler::preview()` / `SyncManager::preview()` /
+`sheet:sync --direction=both --dry-run`: counts from `decide()`, nothing
+written, no run recorded.
+
+| Run (copy of the production tab) | Outcome |
+|---|---|
+| preview, DB not emptied | `create 4102, append 3782` (would duplicate the history) |
+| preview, DB emptied | `create 4102, append 0` (2.8 s with Fitly's per-run account cache; 54 s without) |
+| first run | 4 102 created in 30 s (160 s without the cache), only X changed |
+| second run | 0 |
+| a person edits `Dep` | imported, nothing written |
+| a person types a row without an id | created, only its id written |
+| the app edits a record whose `Dep` is `=50+20` | exported, only the edited cell written; the formula stays |
+| real run, round 11 | 48 checks, 0 failed |
+
+Tests: 66/66 (`test_a_db_edit_writes_only_the_cells_it_changes`,
+`test_a_preview_counts_without_writing`; `test_update_writes_only_writable_mapped_cells`
+tightened to the changed cell).
