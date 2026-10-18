@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`a046c9e`](https://github.com/ultra-bugs/syncro-sheet/commit/a046c9e9c5c28d06c860ab353fc54e6046690661)
+**Last updated:** 2026-10-18 · verified against [`2eb4579`](https://github.com/ultra-bugs/syncro-sheet/commit/2eb457972efbeb7d6fc0578b096ac9c8ac990d88)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -226,10 +226,15 @@ class SyncEntry extends Model
 ### 4. Google Sheets Integration
 
 #### `GoogleClient` (Wrapper around revolution/laravel-google-sheets)
-- Manages Google Sheets connections and authentication, first match wins:
-  `syncro-sheet.google.credentials` (path or array, package only) →
-  `google.service.*` when `GOOGLE_SERVICE_ENABLED` → OAuth (token from
-  `TokenManager::getToken()`); none → `GoogleSheetsException` on the first call
+- Manages Google Sheets connections and authentication:
+  - config, first match wins: `syncro-sheet.google.credentials` (path, JSON
+    or array; package only), then `google.service.*` when
+    `GOOGLE_SERVICE_ENABLED`, then OAuth (token from `TokenManager::getToken()`);
+  - then the `SyncManager::configureUsing()` callbacks (`ClientConfigurators`,
+    a container singleton), which may add to or override the config;
+  - a client left without credentials → `GoogleSheetsException` naming every
+    source checked;
+  - the source used is logged once per client.
 - Every call is scoped to a **quoted** sheet name with a fresh range (the
   underlying client is shared and stateful)
 - `readSheet()` reads typed values (`UNFORMATTED_VALUE`, dates as displayed);
@@ -270,7 +275,7 @@ Top-level keys (defaults in [`config/syncro-sheet.php`](../config/syncro-sheet.p
 |---|---|
 | `defaults` | `batch_size` 100, `direction`, `source_of_truth`, `timeout`, `retries`, `export.write_mode`, `import.use_batch_upsert`, `reconcile.hash_ignore` |
 | `database` | `connection` / `sqlite_database` — where the tracking tables live (`TrackingDatabase`) |
-| `google` | `credentials` — service account for the package's client (path or array; null = `google.service.*`, then OAuth) |
+| `google` | `credentials` — service account for the package's client (path, JSON or array; null = `google.service.*`, then OAuth). Code: `SyncManager::configureUsing()` |
 | `logging` | `channel` (`sheet-sync`), `level`, `separate_files` |
 | `sheets` | `read` render options, `cache_ttl`, `rate_limit` (60 / 60 s), `retry` (5 times, 2 000 ms base) |
 | `notifications` | channels, `notify_on` |

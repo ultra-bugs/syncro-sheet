@@ -35,7 +35,7 @@
 | Tracking tables | the package's own SQLite file (`storage/syncro-sheet/tracking.sqlite`); one subset re-run with `SYNCRO_SHEET_DB_CONNECTION=pgsql` |
 | Sheets | live Google Sheets API, service account with edit access; dedicated test tabs only (the production tab is read as seed data, never written) |
 | Google library | `revolution/laravel-google-sheets` 7.2 |
-| Credentials | rounds 1–8: app-wide `GOOGLE_SERVICE_ENABLED` + `GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION`; round 9: those off, the module's service account handed to the package through `syncro-sheet.google.credentials` |
+| Credentials | rounds 1–8: app-wide `GOOGLE_SERVICE_ENABLED` + `GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION`; rounds 9–11: those off, the module's service account set into `syncro-sheet.google.credentials` at boot; round 12: a `SyncManager::configureUsing()` callback in the module's provider |
 
 ```mermaid
 flowchart LR
@@ -349,6 +349,7 @@ notes are in the linked plan docs.
 | 9 | `5db9bd7` failed runs + package credentials; no `GOOGLE_SERVICE_*` in the environment | 48 | 0 |
 | 10 | `638897e` per-side baselines, key-only write-back, `readRows()` in spans | 48 | 0 |
 | 11 | `a046c9e` cell-level in-place exports, preview | 48 | 0 |
+| 12 | `2eb4579` credentials through `configureUsing()` only | 48 | 0 |
 
 In rounds 4–7 the single failure was an app check (S15). It exercised the
 app's own legacy observer push, which writes invalid tracking rows. That

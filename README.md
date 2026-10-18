@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`a046c9e`](https://github.com/ultra-bugs/syncro-sheet/commit/a046c9e9c5c28d06c860ab353fc54e6046690661)
+**Last updated:** 2026-10-18 · verified against [`2eb4579`](https://github.com/ultra-bugs/syncro-sheet/commit/2eb457972efbeb7d6fc0578b096ac9c8ac990d88)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -95,11 +95,36 @@ php artisan migrate
 2. Enable Google Sheets API
 3. Create a Service Account (recommended for servers) or OAuth 2.0 credentials
 4. Share the spreadsheet with the service account's `client_email` (Editor)
-5. Tell the package which credentials to use. The first match wins:
+5. Tell the package which credentials to use, **in code** or **in config**.
+
+**In code** (recommended when the app or one of its modules owns the service
+account): register a callback in a service provider's `boot()`.
+
+```php
+use Google\Client;
+use Zuko\SyncroSheet\Services\SyncManager;
+
+public function boot(): void
+{
+    SyncManager::configureUsing(function (Client $client) {
+        $client->setAuthConfig(storage_path('credentials/service-account.json')); // path or decoded array
+    });
+    // same thing through the facade: SyncroSheet::configureUsing(...)
+}
+```
+
+The callback runs each time the package builds its Google client, after the
+config-based credentials below, so it may add to them or override them
+(credentials, `setSubject()` for domain-wide delegation, an HTTP client). It
+runs in whichever process does the work, a queue worker included. Callbacks run
+in the order they were added; one added after a client was built makes the
+next call build it again.
+
+**In config**: the first match wins.
 
 | # | Setting | Value |
 |---|---|---|
-| 1 | `syncro-sheet.google.credentials` (`SYNCRO_SHEET_GOOGLE_CREDENTIALS`) | Service-account JSON path, or the decoded array (a host module can set it at boot). Used by this package only. |
+| 1 | `syncro-sheet.google.credentials` (`SYNCRO_SHEET_GOOGLE_CREDENTIALS`) | Service-account JSON path, the JSON itself, or the decoded array. Used by this package only. |
 | 2 | `GOOGLE_SERVICE_ENABLED=true` + `GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION` | revolution/laravel-google-sheets' app-wide service account (`config/google.php`). |
 | 3 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT` | OAuth; the token is read from the cache (`TokenManager`). |
 
@@ -112,9 +137,16 @@ GOOGLE_SERVICE_ENABLED=true
 GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION=/absolute/path/service-account.json
 ```
 
-With none of them, every run fails at its first API call with
-`GoogleSheetsException: No Google credentials configured …` (the run is marked
-`failed` with that message).
+If neither the callbacks nor the config give the client any credentials, the
+run fails at its first API call with
+`GoogleSheetsException: No Google credentials configured. Checked: …`, which
+lists every source. The run is marked `failed` with that message.
+
+When it works in `tinker` but not in the queue, the cause is usually the
+worker: it keeps the config and code it booted with, so run
+`php artisan queue:restart` after changing `.env`, config or code. The package
+log names the source each process used:
+`Google client: credentials from configureUsing()`.
 
 ### Package Configuration
 
@@ -137,7 +169,7 @@ return [
         'sqlite_database' => env('SYNCRO_SHEET_SQLITE_DATABASE'), // null = storage/syncro-sheet/tracking.sqlite
     ],
     'google' => [
-        'credentials'     => env('SYNCRO_SHEET_GOOGLE_CREDENTIALS'),     // path | array | null (see above)
+        'credentials'     => env('SYNCRO_SHEET_GOOGLE_CREDENTIALS'),     // path | JSON | array | null (see above)
     ],
     // 'logging', 'sheets', 'notifications', 'scheduler' — see the published config
 ];
