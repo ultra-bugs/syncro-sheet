@@ -78,10 +78,12 @@ return [
     |--------------------------------------------------------------------------
     | Google credentials
     |--------------------------------------------------------------------------
-    | Service account used by the package's own client only: a JSON file path
-    | or the decoded array (a host module can set it at boot). Null falls back
-    | to revolution/laravel-google-sheets: google.service.* when
-    | GOOGLE_SERVICE_ENABLED=true, OAuth otherwise.
+    | Service account used by the package's own client only: a JSON file path,
+    | the JSON itself or the decoded array. Null falls back to
+    | revolution/laravel-google-sheets: google.service.* when
+    | GOOGLE_SERVICE_ENABLED=true, OAuth otherwise. In code, register a
+    | callback instead: SyncManager::configureUsing(fn (Google\Client $c) => ...)
+    | runs after these and may override them.
     */
     'google' => [
         'credentials' => env('SYNCRO_SHEET_GOOGLE_CREDENTIALS'),

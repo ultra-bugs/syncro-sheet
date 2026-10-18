@@ -17,6 +17,7 @@
 
 namespace Zuko\SyncroSheet\Services;
 
+use Closure;
 use Illuminate\Database\Eloquent\Model;
 use Zuko\SyncroSheet\Contracts\SheetExportable;
 use Zuko\SyncroSheet\Contracts\SheetImportable;
@@ -176,6 +177,21 @@ class SyncManager
             $this->handleSyncError($syncState, $e);
             throw $e;
         }
+    }
+
+    /**
+     * Configure the Google client in code, e.g. from a service provider:
+     *
+     *     SyncManager::configureUsing(fn (\Google\Client $client) => $client->setAuthConfig($path));
+     *
+     * The callback receives every client the package builds, after the
+     * config-based credentials (syncro-sheet.google.credentials,
+     * google.service.*, OAuth), and may add to or override them: credentials,
+     * subject, HTTP client. Callbacks run in the order they were added.
+     */
+    public static function configureUsing(Closure $callback): void
+    {
+        app(ClientConfigurators::class)->add($callback);
     }
 
     /**

@@ -23,6 +23,7 @@ use Illuminate\Foundation\AliasLoader;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Revolution\Google\Sheets\SheetsClient;
+use Zuko\SyncroSheet\Services\ClientConfigurators;
 use Zuko\SyncroSheet\Services\Exporter;
 use Zuko\SyncroSheet\Services\GoogleClient;
 use Zuko\SyncroSheet\Services\Importer;
@@ -130,6 +131,7 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->app->singleton(Importer::class);
         $this->app->singleton(Reconciler::class);
         $this->app->singleton(GoogleClient::class);
+        $this->app->singleton(ClientConfigurators::class);
         $this->app->singleton(SyncScheduler::class);
         $this->app->singleton(TrackingDatabase::class);
         // Register facade

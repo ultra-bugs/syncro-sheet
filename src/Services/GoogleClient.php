@@ -38,6 +38,9 @@ class GoogleClient
 
     private $sheetsClient = null;
 
+    /** ClientConfigurators::version() the cached client was built with (null: not built here). */
+    private ?int $builtWith = null;
+
     public function __construct(
         private readonly TokenManager $tokenManager,
         private readonly SyncLogger $logger
@@ -49,7 +52,9 @@ class GoogleClient
      */
     private function getClient()
     {
-        if ($this->sheetsClient) {
+        $configurators = app(ClientConfigurators::class);
+        // A callback added since the client was built: build it again.
+        if ($this->sheetsClient && ($this->builtWith === null || $this->builtWith === $configurators->version())) {
             return $this->sheetsClient;
         }
 
@@ -58,27 +63,95 @@ class GoogleClient
             $token = $this->tokenManager->getToken();
             $this->sheetsClient = Sheets::setAccessToken($token);
         } else {
-            // Non-Laravel environment - manual setup using config
             $client = new GoogleAPIClient($this->getGoogleConfig());
 
             // Set required scopes for sheets
             $client->setScopes([GoogleSheets::DRIVE, GoogleSheets::SPREADSHEETS]);
 
-            // Handle authentication based on config: the package's own
-            // credentials first, then revolution's service account, then OAuth.
-            if (filled($credentials = config('syncro-sheet.google.credentials'))) {
-                $this->setupServiceAccount($client, $credentials);
-            } elseif (config('google.service.enable')) {
-                $this->setupServiceAccount($client, config('google.service.file'));
-            } else {
-                $this->setupOAuth($client);
+            // Config first, then the configureUsing() callbacks, which may add
+            // to or override it.
+            $source = $this->applyConfiguredCredentials($client);
+            $configurators->apply($client);
+
+            if (! self::hasCredentials($client)) {
+                throw new GoogleSheetsException(
+                    'No Google credentials configured. Checked: SyncroSheet::configureUsing() callbacks ('
+                    .($configurators->isEmpty() ? 'none' : 'set no credentials').'), '
+                    .'syncro-sheet.google.credentials (SYNCRO_SHEET_GOOGLE_CREDENTIALS: JSON path, JSON or array), '
+                    .'google.service.* (GOOGLE_SERVICE_ENABLED=true + GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION), '
+                    .'OAuth (GOOGLE_CLIENT_ID). A running queue worker keeps the config it booted with: '
+                    .'php artisan queue:restart after changing it.'
+                );
             }
+
+            $this->logger->info('Google client: credentials from '.match (true) {
+                $configurators->isEmpty() => $source,
+                $source === null => 'configureUsing()',
+                default => "{$source}, then configureUsing()",
+            });
 
             $service = new GoogleSheets($client);
             $this->sheetsClient = Sheets::setService($service);
         }
 
+        $this->builtWith = $configurators->version();
+
         return $this->sheetsClient;
+    }
+
+    /**
+     * Credentials from config, first match: the package's own, revolution's
+     * service account, OAuth. Returns the source applied, null when none is
+     * configured (configureUsing() callbacks may still provide them).
+     */
+    private function applyConfiguredCredentials(GoogleAPIClient $client): ?string
+    {
+        if (filled($credentials = config('syncro-sheet.google.credentials'))) {
+            $this->setupServiceAccount($client, self::decodeCredentials($credentials));
+
+            return 'syncro-sheet.google.credentials';
+        }
+
+        if (config('google.service.enable')) {
+            $this->setupServiceAccount($client, config('google.service.file'));
+
+            return 'google.service';
+        }
+
+        if (filled(config('google.client_id')) || filled($this->tokenManager->getToken())) {
+            $this->setupOAuth($client);
+
+            return 'oauth';
+        }
+
+        return null;
+    }
+
+    /** A service-account JSON given inline (env var) instead of as a path. */
+    private static function decodeCredentials(array|string $credentials): array|string
+    {
+        if (is_string($credentials) && str_starts_with(ltrim($credentials), '{')) {
+            $decoded = json_decode($credentials, true);
+            if (! is_array($decoded)) {
+                throw new GoogleSheetsException('syncro-sheet.google.credentials looks like JSON but does not parse: '.json_last_error_msg());
+            }
+
+            return $decoded;
+        }
+
+        return $credentials;
+    }
+
+    /**
+     * Does the client carry any credentials: a service-account key, an OAuth
+     * client id, an access token or application default credentials?
+     */
+    public static function hasCredentials(GoogleAPIClient $client): bool
+    {
+        return filled($client->getConfig('signing_key'))
+            || filled($client->getClientId())
+            || filled($client->getAccessToken())
+            || $client->isUsingApplicationDefaultCredentials();
     }
 
     /**
@@ -144,14 +217,6 @@ class GoogleClient
     private function setupOAuth(GoogleAPIClient $client): void
     {
         $token = $this->tokenManager->getToken();
-
-        if (blank(config('google.client_id')) && blank($token)) {
-            throw new GoogleSheetsException(
-                'No Google credentials configured: set syncro-sheet.google.credentials (SYNCRO_SHEET_GOOGLE_CREDENTIALS), '
-                .'or enable the service account (GOOGLE_SERVICE_ENABLED=true + GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION), '
-                .'or configure OAuth (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).'
-            );
-        }
 
         $client->setClientId(config('google.client_id'));
         $client->setClientSecret(config('google.client_secret'));
