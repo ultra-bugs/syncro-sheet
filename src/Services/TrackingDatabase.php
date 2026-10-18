@@ -76,13 +76,16 @@ class TrackingDatabase
     }
 
     /**
-     * First boot: create the SQLite file and its schema (under a file lock, so
-     * concurrent workers do not migrate twice).
+     * Create the SQLite file and its schema on first boot, and run migrations
+     * added by a package upgrade on an existing file. A marker file next to
+     * the database names the newest migration applied, so a boot with nothing
+     * pending only compares two file names. Under a file lock, so concurrent
+     * workers do not migrate twice.
      */
     public function ensureSchema(): void
     {
         $path = (string) config('database.connections.'.self::CONNECTION.'.database');
-        if (is_file($path) && filesize($path) > 0) {
+        if (is_file($path) && filesize($path) > 0 && $this->appliedMarker($path) === $this->latestMigration()) {
             return;
         }
 
@@ -92,8 +95,10 @@ class TrackingDatabase
 
         try {
             clearstatcache(true, $path);
-            if (! is_file($path) || filesize($path) === 0) {
+            if (! is_file($path)) {
                 touch($path);
+            }
+            if (filesize($path) === 0 || $this->appliedMarker($path) !== $this->latestMigration()) {
                 $this->migrate();
             }
         } finally {
@@ -119,11 +124,34 @@ class TrackingDatabase
                 if (! $migrator->repositoryExists()) {
                     $migrator->getRepository()->createRepository();
                 }
-                $migrator->run([dirname(__DIR__, 2).'/database/migrations']);
+                $migrator->run([self::migrationsPath()]);
             });
+
+            $path = (string) config('database.connections.'.self::CONNECTION.'.database');
+            file_put_contents($path.'.schema', $this->latestMigration());
         } finally {
             self::$migrating = false;
         }
+    }
+
+    public static function migrationsPath(): string
+    {
+        return dirname(__DIR__, 2).'/database/migrations';
+    }
+
+    /** File name of the newest package migration. */
+    private function latestMigration(): string
+    {
+        $files = glob(self::migrationsPath().'/*.php') ?: [];
+        sort($files);
+
+        return basename((string) end($files));
+    }
+
+    /** Newest migration recorded as applied to the file at $path ('' = unknown). */
+    private function appliedMarker(string $path): string
+    {
+        return is_file($path.'.schema') ? trim((string) file_get_contents($path.'.schema')) : '';
     }
 
     protected function sqliteAvailable(): bool

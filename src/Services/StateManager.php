@@ -148,23 +148,30 @@ class StateManager
     }
 
     /**
-     * Load the reconcile content-hash baseline for a model as a map of
-     * record_id => content_hash (from the sync_snapshots table).
+     * Load the reconcile baseline for a model: record_id => the content hash
+     * of each side when they were last in sync (sync_snapshots; a row written
+     * before sheet_hash existed gives both sides content_hash).
      *
-     * @return array<int|string, string>
+     * @return array<string, array{db: string, sheet: string}>
      */
     public function baselineFor(string $modelClass): array
     {
         return $this->tracking()->table('sync_snapshots')
             ->where('model_class', $modelClass)
-            ->pluck('content_hash', 'record_id')
+            ->get(['record_id', 'content_hash', 'sheet_hash'])
+            ->mapWithKeys(fn ($row) => [(string) $row->record_id => [
+                'db' => $row->content_hash,
+                'sheet' => $row->sheet_hash ?? $row->content_hash,
+            ]])
             ->all();
     }
 
     /**
-     * Upsert the reconcile baseline for a batch of records.
+     * Upsert the reconcile baseline for a batch of records: the content hash
+     * each side had when the two were last in sync. A single hash means both
+     * sides had that form.
      *
-     * @param  array<int|string, string>  $hashesByRecordId  record_id => content_hash
+     * @param  array<int|string, string|array{db: string, sheet: string}>  $hashesByRecordId
      */
     public function storeSnapshots(string $modelClass, array $hashesByRecordId): void
     {
@@ -179,7 +186,8 @@ class StateManager
             $rows[] = [
                 'model_class' => $modelClass,
                 'record_id' => $recordId,
-                'content_hash' => $hash,
+                'content_hash' => is_array($hash) ? $hash['db'] : $hash,
+                'sheet_hash' => is_array($hash) ? $hash['sheet'] : $hash,
                 'synced_at' => $now,
                 'created_at' => $now,
                 'updated_at' => $now,
@@ -189,7 +197,7 @@ class StateManager
         $this->tracking()->table('sync_snapshots')->upsert(
             $rows,
             ['model_class', 'record_id'],
-            ['content_hash', 'synced_at', 'updated_at']
+            ['content_hash', 'sheet_hash', 'synced_at', 'updated_at']
         );
     }
 }

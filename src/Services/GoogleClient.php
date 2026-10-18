@@ -28,6 +28,12 @@ use Zuko\SyncroSheet\Exceptions\GoogleSheetsException;
 
 class GoogleClient
 {
+    /** readRows(): rows apart by at most this many are read as one span. */
+    public const READ_ROWS_MAX_GAP = 50;
+
+    /** readRows(): spans (ranges) per values.batchGet request. */
+    public const READ_ROWS_RANGES_PER_REQUEST = 100;
+
     private array $rateLimits = [];
 
     private $sheetsClient = null;
@@ -222,8 +228,9 @@ class GoogleClient
     }
 
     /**
-     * Re-read specific rows (1-based absolute indexes) in one values.batchGet,
-     * with the same render options as readSheet().
+     * Re-read specific rows (1-based absolute indexes) with the same render
+     * options as readSheet(): rows merged into spans (rowSpans()), at most
+     * READ_ROWS_RANGES_PER_REQUEST spans per values.batchGet.
      *
      * @param  array<int, int>  $rowIndexes
      * @return array<int, array<int, mixed>>  rowIndex => cell values (trailing blanks trimmed)
@@ -236,15 +243,28 @@ class GoogleClient
 
         try {
             $quoted = "'".str_replace("'", "''", $sheetName)."'";
-            $response = $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchGet($spreadsheetId, [
-                'ranges' => array_map(static fn (int $row) => "{$quoted}!{$row}:{$row}", array_values($rowIndexes)),
-                'valueRenderOption' => config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'),
-                'dateTimeRenderOption' => config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'),
-            ]));
+            $spans = self::rowSpans($rowIndexes);
+            $read = [];
+
+            // One range per span and a bounded number of ranges per request:
+            // a batchGet is a GET, its ranges travel in the URL.
+            foreach (array_chunk($spans, self::READ_ROWS_RANGES_PER_REQUEST) as $chunk) {
+                $response = $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchGet($spreadsheetId, [
+                    'ranges' => array_map(static fn (array $span) => "{$quoted}!{$span[0]}:{$span[1]}", $chunk),
+                    'valueRenderOption' => config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'),
+                    'dateTimeRenderOption' => config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'),
+                ]));
+
+                foreach ($chunk as $position => [$first]) {
+                    foreach ($response->getValueRanges()[$position]->getValues() ?? [] as $offset => $values) {
+                        $read[$first + $offset] = $values;
+                    }
+                }
+            }
 
             $rows = [];
-            foreach (array_values($rowIndexes) as $position => $row) {
-                $rows[$row] = $response->getValueRanges()[$position]->getValues()[0] ?? [];
+            foreach (array_values($rowIndexes) as $row) {
+                $rows[$row] = $read[$row] ?? [];
             }
 
             return $rows;
@@ -402,6 +422,31 @@ class GoogleClient
     /**
      * 0-based column index -> A1 column letters (0 => A, 25 => Z, 26 => AA).
      */
+    /**
+     * Sorted 1-based row numbers -> [first, last] spans; a gap of at most
+     * READ_ROWS_MAX_GAP rows is read along and dropped.
+     *
+     * @param  array<int, int>  $rowIndexes
+     * @return array<int, array{0: int, 1: int}>
+     */
+    public static function rowSpans(array $rowIndexes): array
+    {
+        $rows = array_values(array_unique(array_map('intval', $rowIndexes)));
+        sort($rows);
+
+        $spans = [];
+        foreach ($rows as $row) {
+            $last = array_key_last($spans);
+            if ($last !== null && $row - $spans[$last][1] <= self::READ_ROWS_MAX_GAP + 1) {
+                $spans[$last][1] = $row;
+            } else {
+                $spans[] = [$row, $row];
+            }
+        }
+
+        return $spans;
+    }
+
     public static function columnLetter(int $index): string
     {
         $letter = '';

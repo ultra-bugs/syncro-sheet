@@ -43,7 +43,7 @@ class TrackingDatabaseTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach ([$this->file, $this->file.'.lock', $this->file.'-wal', $this->file.'-shm'] as $path) {
+        foreach ([$this->file, $this->file.'.lock', $this->file.'.schema', $this->file.'-wal', $this->file.'-shm'] as $path) {
             @unlink($path);
         }
         config(['syncro-sheet.database.resolved_connection' => 'testbench']);
@@ -82,6 +82,22 @@ class TrackingDatabaseTest extends TestCase
 
         $tracking->migrate(); // idempotent: nothing pending
         $this->assertSame(1, DB::connection(TrackingDatabase::CONNECTION)->table('sync_states')->count());
+    }
+
+    public function test_an_upgrade_migrates_an_existing_file_on_the_next_boot(): void
+    {
+        $this->useDedicatedSqlite();
+        $this->assertTrue(Schema::connection(TrackingDatabase::CONNECTION)->hasColumn('sync_snapshots', 'sheet_hash'));
+
+        // A file from before sheet_hash: last migration rolled back, no marker.
+        app('migrator')->usingConnection(TrackingDatabase::CONNECTION, fn () => app('migrator')->rollback([TrackingDatabase::migrationsPath()], ['step' => 1]));
+        @unlink($this->file.'.schema');
+        $this->assertFalse(Schema::connection(TrackingDatabase::CONNECTION)->hasColumn('sync_snapshots', 'sheet_hash'));
+
+        app(TrackingDatabase::class)->ensureSchema();
+
+        $this->assertTrue(Schema::connection(TrackingDatabase::CONNECTION)->hasColumn('sync_snapshots', 'sheet_hash'));
+        $this->assertSame('2024_06_01_000005_add_sheet_hash_to_sync_snapshots.php', file_get_contents($this->file.'.schema'));
     }
 
     public function test_without_pdo_sqlite_it_falls_back_and_warns_on_both_channels_once(): void

@@ -106,8 +106,7 @@ class ModelHooksTest extends TestCase
         $ledger = TestHookedLedger::sole();
         $this->assertSame('lunch', $ledger->note);
         $this->assertSame([3], array_keys($this->fakeClient->updatedByIndex));
-        $this->assertSame('LUNCH', $this->fakeClient->updatedByIndex[3][1], 'write-back uses the transformer');
-        $this->assertSame($ledger->id, $this->fakeClient->updatedByIndex[3][4]);
+        $this->assertSame([4 => $ledger->id], $this->fakeClient->updatedByIndex[3], 'only the key is written back');
     }
 
     public function test_export_uses_the_model_transformer(): void

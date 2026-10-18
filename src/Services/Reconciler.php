@@ -73,13 +73,14 @@ class Reconciler
      * record. Pure (reads only, no writes) so a dispatcher can run it centrally
      * and then fan the resulting plan out to apply jobs.
      *
-     * @return array{decisions: array<int, array{pk: int|string, action: string, payload: array, hash: string}>, seeds: array<int|string, string>}
-     *   - decisions: actionable records. action 'import' -> payload {assoc};
+     * @return array{decisions: array<int, array{pk: int|string, action: string, payload: array, hash: string}>, seeds: array<int|string, array{db: string, sheet: string}>}
+     *   - decisions: actionable records. action 'import' -> payload {assoc, hashColumns};
      *     action 'export' -> payload {rowIndex (int|null), appendAt (int|null),
      *     values (columnIndex => cell), headers (list|null: bootstrap an empty sheet)};
      *     action 'create' (sheet row without a key; pk null) -> payload {rowIndex,
-     *     raw, assoc, writable, hashColumns}.
-     *   - seeds: pk => hash for records that already agree but have no baseline yet.
+     *     raw, assoc (parsed), sheetAssoc (as read), hashColumns}.
+     *   - seeds: pk => both sides' hash for records that agree but whose
+     *     baseline is missing or stale.
      */
     public function decide(string $modelClass): array
     {
@@ -136,6 +137,7 @@ class Reconciler
         $toCreate = [];
         $newBaseline = [];
         $pks = [];
+        $hashColumns = null;
 
         foreach ($decisions as $decision) {
             $payload = $decision['payload'];
@@ -147,10 +149,13 @@ class Reconciler
 
             $pk = $decision['pk'];
             $pks[] = $pk;
-            $newBaseline[$pk] = $decision['hash'];
+            // Export: the sheet now holds the DB form. Import: the DB side's
+            // form is known once imported (below).
+            $newBaseline[$pk] = ['db' => $decision['hash'], 'sheet' => $decision['hash']];
 
             if ($decision['action'] === 'import') {
                 $toImport[$pk] = $payload['assoc'];
+                $hashColumns ??= $payload['hashColumns'] ?? null;
             } elseif (($payload['rowIndex'] ?? null) !== null) {
                 $exports['updates'][$payload['rowIndex']] = $payload['values'];
             } else {
@@ -160,11 +165,13 @@ class Reconciler
         }
 
         $codec = $this->transformer->forModel($model);
-        $this->applyImports($modelClass, $toImport, $codec);
+        foreach ($this->applyImports($modelClass, $toImport, $codec, $hashColumns) as $pk => $dbHash) {
+            $newBaseline[$pk]['db'] = $dbHash;
+        }
         $this->applyExports($model, $exports);
-        foreach ($this->applyCreates($model, $toCreate, $codec) as $pk => $hash) {
+        foreach ($this->applyCreates($model, $toCreate, $codec) as $pk => $hashes) {
             $pks[] = $pk;
-            $newBaseline[$pk] = $hash;
+            $newBaseline[$pk] = $hashes;
         }
         $this->stateManager->storeSnapshots($modelClass, $newBaseline);
 
@@ -172,12 +179,12 @@ class Reconciler
     }
 
     /**
-     * Create records for sheet rows without a key and write each record's
-     * writable cells (its new key included) back onto its row, so both sides
-     * agree right away.
+     * Create records for sheet rows without a key and write only the new key
+     * back onto each row: the row is what the person typed (formulas, blanks,
+     * spacing) and stays as is. The baseline keeps each side's own form.
      *
-     * @param  array<int, array{rowIndex: int, raw: array, assoc: array, writable: array<string, int>, hashColumns: array<int, string>}>  $toCreate
-     * @return array<int|string, string>  new pk => baseline hash
+     * @param  array<int, array{rowIndex: int, raw: array, assoc: array, sheetAssoc?: array, hashColumns: array<int, string>}>  $toCreate
+     * @return array<int|string, array{db: string, sheet: string}>  new pk => baseline
      */
     private function applyCreates(SheetSyncable $model, array $toCreate, DataTransformer $codec): array
     {
@@ -189,18 +196,27 @@ class Reconciler
         $hashes = [];
         $rows = array_map(static fn (array $payload) => ['raw' => $payload['raw'], 'assoc' => $payload['assoc']], $toCreate);
 
-        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, $codec, &$hashes) {
+        $keyColumn = $model->getSheetKeyColumn();
+        $keyIndex = $model->getSheetKeyColumnIndex();
+
+        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, $codec, $keyColumn, $keyIndex, &$hashes) {
             $updates = [];
             foreach ($records as $rowIndex => $record) {
                 $record = $record->fresh() ?? $record; // DB defaults / casts, as the next run reads it
-                $assoc = $codec->recordToAssoc($record, $headers);
-                $writable = $toCreate[$rowIndex]['writable'];
+                $hashColumns = $toCreate[$rowIndex]['hashColumns'];
+                $dbHash = $codec->canonicalHash($codec->recordToAssoc($record, $headers), $hashColumns);
 
-                $updates[$rowIndex] = array_combine(
-                    array_values($writable),
-                    $codec->formatRow($assoc, array_keys($writable))
-                );
-                $hashes[$record->getKey()] = $codec->canonicalHash($assoc, $toCreate[$rowIndex]['hashColumns']);
+                // The row as the next run reads it: unchanged, plus the key.
+                $sheetAssoc = $toCreate[$rowIndex]['sheetAssoc'] ?? null;
+                if ($sheetAssoc !== null) {
+                    $sheetAssoc[$keyColumn] = $this->importer->normalizeKey($record->getKey());
+                }
+
+                $updates[$rowIndex] = [$keyIndex => $codec->formatRow([$keyColumn => $record->getKey()], [$keyColumn])[0]];
+                $hashes[$record->getKey()] = [
+                    'db' => $dbHash,
+                    'sheet' => $sheetAssoc !== null ? $codec->canonicalHash($sheetAssoc, $hashColumns) : $dbHash,
+                ];
             }
 
             $this->googleClient->updateRows($model->getSheetIdentifier(), $model->getSheetName(), $updates);
@@ -266,14 +282,16 @@ class Reconciler
                 continue; // soft-deleted in the DB: leave both sides alone
             }
 
-            $winner = $this->decideWinner($db['hash'] ?? null, $sheet['hash'] ?? null, $sides['base'][$pk] ?? null, $sot);
+            $base = $sides['base'][$pk] ?? null;
+            $winner = $this->decideWinner($db['hash'] ?? null, $sheet['hash'] ?? null, $base, $sot);
 
             if ($winner === 'none') {
-                if (! isset($sides['base'][$pk]) || $sides['base'][$pk] !== $db['hash']) {
-                    $seeds[$pk] = $db['hash'];
+                $seed = ['db' => $db['hash'], 'sheet' => $sheet['hash']];
+                if ($base !== $seed) {
+                    $seeds[$pk] = $seed;
                 }
             } elseif ($winner === 'sheet') {
-                $decisions[] = ['pk' => $pk, 'action' => 'import', 'payload' => ['assoc' => $sheet['assoc']], 'hash' => $sheet['hash']];
+                $decisions[] = ['pk' => $pk, 'action' => 'import', 'payload' => ['assoc' => $sheet['assoc'], 'hashColumns' => $layout['hash']], 'hash' => $sheet['hash']];
             } else {
                 $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow, $codec);
                 $decisions[] = ['pk' => $pk, 'action' => 'export', 'payload' => $payload, 'hash' => $db['hash']];
@@ -307,10 +325,14 @@ class Reconciler
 
     /**
      * Decide which side wins for a single record (null hash = side missing).
+     * Each side is compared with its own form at the last sync, so the two
+     * may legitimately differ in normalisation (spacing, 0 vs blank, a
+     * formula's value) without counting as a change.
      *
+     * @param  array{db: string, sheet: string}|null  $base
      * @return string 'db' | 'sheet' | 'none'
      */
-    private function decideWinner(?string $dbHash, ?string $sheetHash, ?string $base, string $sot): string
+    private function decideWinner(?string $dbHash, ?string $sheetHash, ?array $base, string $sot): string
     {
         if ($dbHash === null || $sheetHash === null) {
             // Present on one side only. No-delete policy: re-propagate to the other.
@@ -321,11 +343,16 @@ class Reconciler
             return 'none'; // both sides agree (also on a first run without baseline)
         }
 
-        $dbChanged = $dbHash !== $base;
-        $sheetChanged = $sheetHash !== $base;
+        // No baseline: both count as changed.
+        $dbChanged = $dbHash !== ($base['db'] ?? null);
+        $sheetChanged = $sheetHash !== ($base['sheet'] ?? null);
 
         if ($dbChanged && $sheetChanged) {
             return $sot; // genuine conflict -> source-of-truth decides
+        }
+
+        if (! $dbChanged && ! $sheetChanged) {
+            return 'none';
         }
 
         return $dbChanged ? 'db' : 'sheet';
@@ -392,7 +419,7 @@ class Reconciler
                 'rowIndex' => $rowIndex,
                 'raw' => $row['raw'],
                 'assoc' => $assoc,
-                'writable' => $layout['writable'],
+                'sheetAssoc' => $row['assoc'],
                 'hashColumns' => $layout['hash'],
             ]];
         }
@@ -445,11 +472,13 @@ class Reconciler
      * Upsert the sheet-wins records into the database.
      *
      * @param  array<string, array<string, mixed>>  $toImport  pk => sheet assoc
+     * @param  array<int, string>|null  $hashColumns  null (a plan queued before hashColumns existed): no DB hashes
+     * @return array<string, string>  pk => content hash of the imported record (the DB side's new baseline)
      */
-    private function applyImports(string $modelClass, array $toImport, DataTransformer $codec): void
+    private function applyImports(string $modelClass, array $toImport, DataTransformer $codec, ?array $hashColumns): array
     {
         if (empty($toImport)) {
-            return;
+            return [];
         }
 
         foreach ($toImport as $pk => $assoc) {
@@ -457,6 +486,18 @@ class Reconciler
         }
 
         $this->importer->syncKeySequence($modelClass);
+
+        if ($hashColumns === null) {
+            return [];
+        }
+
+        $headers = $this->resolveHeaders(new $modelClass);
+        $hashes = [];
+        foreach ($modelClass::query()->whereKey(array_keys($toImport))->get() as $record) {
+            $hashes[(string) $record->getKey()] = $codec->canonicalHash($codec->recordToAssoc($record, $headers), $hashColumns);
+        }
+
+        return $hashes;
     }
 
     /**

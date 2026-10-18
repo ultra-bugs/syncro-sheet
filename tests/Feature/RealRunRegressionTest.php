@@ -281,6 +281,67 @@ class RealRunRegressionTest extends TestCase
         }
     }
 
+    public function test_rows_are_re_read_in_spans_and_bounded_requests(): void
+    {
+        $client = new GoogleClient(app(TokenManager::class), app(SyncLogger::class));
+        // A tab whose row n holds ["r{n}"]; batchGet answers each range like the API.
+        $values = new class
+        {
+            public array $requests = [];
+
+            public function batchGet(string $id, array $params): object
+            {
+                $this->requests[] = $params['ranges'];
+                $ranges = array_map(function (string $range) {
+                    preg_match('/!(\d+):(\d+)$/', $range, $m);
+
+                    return new class(array_map(fn ($n) => ["r{$n}"], range((int) $m[1], (int) $m[2])))
+                    {
+                        public function __construct(private array $rows) {}
+
+                        public function getValues(): array
+                        {
+                            return $this->rows;
+                        }
+                    };
+                }, $params['ranges']);
+
+                return new class($ranges)
+                {
+                    public function __construct(private array $ranges) {}
+
+                    public function getValueRanges(): array
+                    {
+                        return $this->ranges;
+                    }
+                };
+            }
+        };
+        $sheets = new class($values)
+        {
+            public function __construct(private object $values) {}
+
+            public function getService(): object
+            {
+                return (object) ['spreadsheets_values' => $this->values];
+            }
+        };
+        (new \ReflectionProperty($client, 'sheetsClient'))->setValue($client, $sheets);
+
+        // 4 000 rows, every other one, plus far-away rows: was one URL with 4 000 ranges (413).
+        $wanted = array_merge(range(2, 8000, 2), [20000, 20051, 30000]);
+        $rows = $client->readRows('id', 'Thu chi', $wanted);
+
+        $this->assertSame(array_map(fn ($n) => ["r{$n}"], $wanted), array_values($rows));
+        $this->assertSame($wanted, array_keys($rows));
+        $this->assertSame([["'Thu chi'!2:8000", "'Thu chi'!20000:20051", "'Thu chi'!30000:30000"]], $values->requests);
+
+        $values->requests = [];
+        $spread = range(1, 250 * 100, 100); // 250 rows, each 99 apart: 250 spans
+        $client->readRows('id', 'Thu chi', $spread);
+        $this->assertSame([100, 100, 50], array_map('count', $values->requests));
+    }
+
     public function test_revolution_google_config_is_merged(): void
     {
         $this->assertIsArray(config('google.service'));
