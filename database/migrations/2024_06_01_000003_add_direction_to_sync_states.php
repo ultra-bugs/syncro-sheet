@@ -22,6 +22,14 @@ use Zuko\SyncroSheet\Services\SyncManager;
 
 return new class extends Migration
 {
+    /**
+     * The tracking tables live on the connection TrackingDatabase resolved.
+     */
+    public function getConnection(): ?string
+    {
+        return \Zuko\SyncroSheet\Services\TrackingDatabase::connectionName();
+    }
+
     public function up(): void
     {
         Schema::table('sync_states', static function (Blueprint $table) {

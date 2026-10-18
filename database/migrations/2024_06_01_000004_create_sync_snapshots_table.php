@@ -21,6 +21,14 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * The tracking tables live on the connection TrackingDatabase resolved.
+     */
+    public function getConnection(): ?string
+    {
+        return \Zuko\SyncroSheet\Services\TrackingDatabase::connectionName();
+    }
+
     public function up(): void
     {
         Schema::create('sync_snapshots', static function (Blueprint $table) {

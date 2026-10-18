@@ -54,6 +54,10 @@ abstract class TestCase extends Orchestra
             'prefix' => '',
         ]);
 
+        // Tracking tables on the in-memory test connection (not the dedicated
+        // SQLite file the package would pick by default).
+        $app['config']->set('syncro-sheet.database.connection', 'testbench');
+
         // Log to its own rotating file (default) so tests don't depend on a
         // named Laravel log channel being registered.
         $app['config']->set('syncro-sheet.logging.separate_files', true);

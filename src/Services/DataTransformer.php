@@ -24,16 +24,31 @@ use Zuko\SyncroSheet\Contracts\SheetExportable;
  * Value codec — the single place that converts values between a model and a
  * sheet cell, in both directions:
  *
- * - export (model -> cell): transformBatch(), formatRow(), formatValue()
- * - import (cell -> model): parseRow()
+ * - export (model -> cell): recordToAssoc() / transformRecord(), formatRow(), formatValue()
+ * - import (cell -> model): parseRow() / parseValue()
  * - reconcile: canonicalHash() builds a normalized content hash so the DB side
  *   and the sheet side can be compared on equal footing.
+ *
+ * Subclass it per model to change how that model's data is written or read
+ * (override transformRecord(), formatValue(), parseValue()) and return it from
+ * the model's sheetTransformer() hook (see InteractsWithSheet). The engines
+ * use the model's transformer for every write, read and hash, so both sides
+ * of the content hash are always formatted the same way.
  *
  * It holds no state and performs no I/O; the engines (Exporter, Importer,
  * Reconciler) call it.
  */
 class DataTransformer
 {
+    /**
+     * The transformer the given model asks for (getSheetTransformer(), see
+     * InteractsWithSheet), or this one.
+     */
+    public function forModel(object $model): DataTransformer
+    {
+        return method_exists($model, 'getSheetTransformer') ? $model->getSheetTransformer() : $this;
+    }
+
     /**
      * Transform a batch of records into sheet rows
      */
@@ -44,20 +59,30 @@ class DataTransformer
         }
 
         return $records->map(function (SheetExportable $record) {
-            return $this->transformRecord($record);
+            return array_map(fn ($value) => $this->formatValue($value), $this->transformRecord($record));
         })->toArray();
     }
 
     /**
-     * Transform a single record into a sheet row
+     * One record as header => value, the way it is written to the sheet (and
+     * hashed on the DB side).
+     *
+     * @param  array<int, string>  $headers  the model's sheet headers (for positional rows)
+     * @return array<string, mixed>
      */
-    private function transformRecord(SheetExportable $record): array
+    public function recordToAssoc(SheetExportable $record, array $headers): array
     {
-        $row = $record->toSheetRow();
+        return $this->toAssoc($this->transformRecord($record), $headers);
+    }
 
-        return array_map(function ($value) {
-            return $this->formatValue($value);
-        }, $row);
+    /**
+     * Record -> sheet row (positional list or header => value). Override to
+     * change what is written for a model; values are formatted afterwards by
+     * formatValue().
+     */
+    protected function transformRecord(SheetExportable $record): array
+    {
+        return $record->toSheetRow();
     }
 
     /**
@@ -77,9 +102,10 @@ class DataTransformer
     }
 
     /**
-     * Normalize a single value read from a sheet cell.
+     * Normalize a single value read from a sheet cell. Override to change how
+     * a model's cells are read.
      */
-    private function parseValue($value)
+    protected function parseValue($value)
     {
         if (is_string($value)) {
             $value = trim($value);
@@ -187,9 +213,10 @@ class DataTransformer
     /**
      * Format a value for Google Sheets. Numbers stay numbers so a RAW write
      * stores a numeric cell (formulas and pivots can aggregate it); everything
-     * else becomes a string.
+     * else becomes a string. Override to change how a model's values are
+     * written (it is used for the content hash too).
      */
-    private function formatValue($value): string|int|float
+    protected function formatValue($value): string|int|float
     {
         if ($value instanceof \DateTimeInterface) {
             return $value->format('Y-m-d H:i:s');

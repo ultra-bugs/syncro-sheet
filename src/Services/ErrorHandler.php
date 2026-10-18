@@ -71,7 +71,7 @@ class ErrorHandler
 
     private function getCurrentRetries(SyncState $syncState): int
     {
-        return DB::table('sync_states')
+        return DB::connection(TrackingDatabase::connectionName())->table('sync_states')
             ->where('model_class', $syncState->model_class)
             ->where('status', 'failed')
             ->where('created_at', '>', now()->subHours(1))

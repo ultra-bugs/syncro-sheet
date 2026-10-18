@@ -18,6 +18,7 @@
 namespace Zuko\SyncroSheet\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Models\Concerns\UsesTrackingConnection;
 
 /**
  * Baseline of a record's last-synced content, used by the reconciler to tell
@@ -25,6 +26,8 @@ use Illuminate\Database\Eloquent\Model;
  */
 class SyncSnapshot extends Model
 {
+    use UsesTrackingConnection;
+
     protected $fillable = [
         'model_class',
         'record_id',

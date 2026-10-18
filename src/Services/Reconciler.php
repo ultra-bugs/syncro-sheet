@@ -98,17 +98,18 @@ class Reconciler
         $values = $this->googleClient->readSheet($model->getSheetIdentifier(), $model->getSheetName());
         $layout = $this->layout($model, $headers, $values[0] ?? [], $keyColumn);
         $layout['nextRow'] = max(count($values), 1) + 1;
+        $codec = $this->transformer->forModel($model);
 
-        $sheet = $this->readSheet($model, $values, $layout);
+        $sheet = $this->readSheet($model, $values, $layout, $codec);
         $sides = [
             'sheet' => $sheet['keyed'],
-            'db' => $this->readDatabase($modelClass, $headers, $layout),
+            'db' => $this->readDatabase($modelClass, $headers, $layout, $codec),
             'base' => $this->stateManager->baselineFor($modelClass),
             'trashed' => $this->trashedKeys($modelClass),
         ];
 
-        $plan = $this->plan($sides, $headers, $layout, $this->resolveSourceOfTruth($model));
-        array_push($plan['decisions'], ...$this->createDecisions($model, $sheet['keyless'], $layout));
+        $plan = $this->plan($sides, $headers, $layout, $this->resolveSourceOfTruth($model), $codec);
+        array_push($plan['decisions'], ...$this->createDecisions($model, $sheet['keyless'], $layout, $codec));
 
         return $plan;
     }
@@ -158,9 +159,10 @@ class Reconciler
             }
         }
 
-        $this->applyImports($modelClass, $toImport);
+        $codec = $this->transformer->forModel($model);
+        $this->applyImports($modelClass, $toImport, $codec);
         $this->applyExports($model, $exports);
-        foreach ($this->applyCreates($model, $toCreate) as $pk => $hash) {
+        foreach ($this->applyCreates($model, $toCreate, $codec) as $pk => $hash) {
             $pks[] = $pk;
             $newBaseline[$pk] = $hash;
         }
@@ -177,7 +179,7 @@ class Reconciler
      * @param  array<int, array{rowIndex: int, raw: array, assoc: array, writable: array<string, int>, hashColumns: array<int, string>}>  $toCreate
      * @return array<int|string, string>  new pk => baseline hash
      */
-    private function applyCreates(SheetSyncable $model, array $toCreate): array
+    private function applyCreates(SheetSyncable $model, array $toCreate, DataTransformer $codec): array
     {
         if (empty($toCreate)) {
             return [];
@@ -187,18 +189,18 @@ class Reconciler
         $hashes = [];
         $rows = array_map(static fn (array $payload) => ['raw' => $payload['raw'], 'assoc' => $payload['assoc']], $toCreate);
 
-        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, &$hashes) {
+        $this->importer->createFromSheetRows($model, $rows, function (array $records) use ($model, $headers, $toCreate, $codec, &$hashes) {
             $updates = [];
             foreach ($records as $rowIndex => $record) {
                 $record = $record->fresh() ?? $record; // DB defaults / casts, as the next run reads it
-                $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
+                $assoc = $codec->recordToAssoc($record, $headers);
                 $writable = $toCreate[$rowIndex]['writable'];
 
                 $updates[$rowIndex] = array_combine(
                     array_values($writable),
-                    $this->transformer->formatRow($assoc, array_keys($writable))
+                    $codec->formatRow($assoc, array_keys($writable))
                 );
-                $hashes[$record->getKey()] = $this->transformer->canonicalHash($assoc, $toCreate[$rowIndex]['hashColumns']);
+                $hashes[$record->getKey()] = $codec->canonicalHash($assoc, $toCreate[$rowIndex]['hashColumns']);
             }
 
             $this->googleClient->updateRows($model->getSheetIdentifier(), $model->getSheetName(), $updates);
@@ -250,7 +252,7 @@ class Reconciler
      *
      * @param  array{sheet: array, db: array, base: array, trashed: array}  $sides
      */
-    private function plan(array $sides, array $headers, array $layout, string $sot): array
+    private function plan(array $sides, array $headers, array $layout, string $sot, DataTransformer $codec): array
     {
         $decisions = [];
         $seeds = [];
@@ -273,7 +275,7 @@ class Reconciler
             } elseif ($winner === 'sheet') {
                 $decisions[] = ['pk' => $pk, 'action' => 'import', 'payload' => ['assoc' => $sheet['assoc']], 'hash' => $sheet['hash']];
             } else {
-                $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow);
+                $payload = $this->exportPayload($db['model'], $headers, $layout, $sheet['rowIndex'] ?? null, $nextRow, $codec);
                 $decisions[] = ['pk' => $pk, 'action' => 'export', 'payload' => $payload, 'hash' => $db['hash']];
             }
         }
@@ -286,13 +288,13 @@ class Reconciler
      * existing row; every mapped column (plus header bootstrap) for a new row,
      * which gets the next free row number so queued chunks stay order-free.
      */
-    private function exportPayload(Model $record, array $headers, array $layout, ?int $rowIndex, int &$nextRow): array
+    private function exportPayload(Model $record, array $headers, array $layout, ?int $rowIndex, int &$nextRow, DataTransformer $codec): array
     {
         $columns = $rowIndex === null ? $layout['columns'] : $layout['writable'];
-        $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
+        $assoc = $codec->recordToAssoc($record, $headers);
         $cells = array_combine(
             array_values($columns),
-            $this->transformer->formatRow($assoc, array_keys($columns))
+            $codec->formatRow($assoc, array_keys($columns))
         );
 
         return [
@@ -336,7 +338,7 @@ class Reconciler
      *
      * @return array{keyed: array<string, array{rowIndex: int, assoc: array<string, mixed>, hash: string}>, keyless: array<int, array{raw: array<int, mixed>, assoc: array<string, mixed>}>}
      */
-    private function readSheet(SheetSyncable $model, array $values, array $layout): array
+    private function readSheet(SheetSyncable $model, array $values, array $layout, DataTransformer $codec): array
     {
         $sheetHeaders = array_shift($values);
         $map = ['keyed' => [], 'keyless' => []];
@@ -366,7 +368,7 @@ class Reconciler
             $map['keyed'][(string) $pk] = [
                 'rowIndex' => $rowIndex,
                 'assoc' => $assoc,
-                'hash' => $this->transformer->canonicalHash($assoc, $layout['hash']),
+                'hash' => $codec->canonicalHash($assoc, $layout['hash']),
             ];
         }
 
@@ -377,18 +379,19 @@ class Reconciler
      * Sheet rows without a key that map to a record: create them in the DB and
      * write the new key back (applied by applyChunk()).
      */
-    private function createDecisions(SheetSyncable $model, array $keyless, array $layout): array
+    private function createDecisions(SheetSyncable $model, array $keyless, array $layout, DataTransformer $codec): array
     {
         $decisions = [];
         foreach ($keyless as $rowIndex => $row) {
-            if ($this->importer->newRecordAttributes($model, $this->transformer->parseRow($row['assoc'])) === []) {
-                continue; // not a record (separator, total, ...)
+            $assoc = $codec->parseRow($row['assoc']);
+            if (! $this->importer->canCreateFromSheetRow($model, $assoc)) {
+                continue; // the model does not take it (separator, total, ...)
             }
 
             $decisions[] = ['pk' => null, 'action' => 'create', 'hash' => null, 'payload' => [
                 'rowIndex' => $rowIndex,
                 'raw' => $row['raw'],
-                'assoc' => $this->transformer->parseRow($row['assoc']),
+                'assoc' => $assoc,
                 'writable' => $layout['writable'],
                 'hashColumns' => $layout['hash'],
             ]];
@@ -402,7 +405,7 @@ class Reconciler
      *
      * @return array<string, array{model: Model, hash: string}>
      */
-    private function readDatabase(string $modelClass, array $headers, array $layout): array
+    private function readDatabase(string $modelClass, array $headers, array $layout, DataTransformer $codec): array
     {
         $model = new $modelClass;
         $chunk = method_exists($model, 'getBatchSize') ? $model->getBatchSize() : config('syncro-sheet.defaults.batch_size', 100);
@@ -411,10 +414,10 @@ class Reconciler
         // eager loads apply and toSheetRow() does not trigger N+1 queries.
         $map = [];
         foreach ($modelClass::query()->lazyById(max((int) $chunk, 1), $model->getKeyName()) as $record) {
-            $assoc = $this->transformer->toAssoc($record->toSheetRow(), $headers);
+            $assoc = $codec->recordToAssoc($record, $headers);
             $map[(string) $record->getKey()] = [
                 'model' => $record,
-                'hash' => $this->transformer->canonicalHash($assoc, $layout['hash']),
+                'hash' => $codec->canonicalHash($assoc, $layout['hash']),
             ];
         }
 
@@ -443,14 +446,14 @@ class Reconciler
      *
      * @param  array<string, array<string, mixed>>  $toImport  pk => sheet assoc
      */
-    private function applyImports(string $modelClass, array $toImport): void
+    private function applyImports(string $modelClass, array $toImport, DataTransformer $codec): void
     {
         if (empty($toImport)) {
             return;
         }
 
         foreach ($toImport as $pk => $assoc) {
-            $this->importer->upsertRow($modelClass, $pk, $this->transformer->parseRow($assoc));
+            $this->importer->upsertRow($modelClass, $pk, $codec->parseRow($assoc));
         }
 
         $this->importer->syncKeySequence($modelClass);

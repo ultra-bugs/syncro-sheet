@@ -50,6 +50,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Tracking database
+    |--------------------------------------------------------------------------
+    | Where sync_states / sync_entries / sync_snapshots live. Left null, the
+    | package uses its own SQLite file when pdo_sqlite is available (schema
+    | managed by the package, see `php artisan syncro-sheet:migrate`), and
+    | falls back to the app's default connection otherwise (with a warning on
+    | the package log and the app's default log channel).
+    */
+    'database' => [
+        'connection' => env('SYNCRO_SHEET_DB_CONNECTION'),        // e.g. 'pgsql' to keep them in the app DB
+        'sqlite_database' => env('SYNCRO_SHEET_SQLITE_DATABASE'), // null = storage/syncro-sheet/tracking.sqlite
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Logging Configuration
     |--------------------------------------------------------------------------
     */

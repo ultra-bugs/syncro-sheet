@@ -17,6 +17,7 @@
 
 namespace Zuko\SyncroSheet\Services;
 
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Zuko\SyncroSheet\Models\SyncState;
 
@@ -25,6 +26,14 @@ class StateManager
     public function __construct(
         private readonly SyncLogger $logger
     ) {
+    }
+
+    /**
+     * Connection holding the tracking tables.
+     */
+    private function tracking(): Connection
+    {
+        return DB::connection(TrackingDatabase::connectionName());
     }
 
     /**
@@ -64,7 +73,7 @@ class StateManager
             ];
         }, $recordIds);
 
-        DB::table('sync_entries')->insert($entries);
+        $this->tracking()->table('sync_entries')->insert($entries);
 
         $syncState->update([
             'total_processed' => $syncState->total_processed + count($recordIds),
@@ -120,7 +129,7 @@ class StateManager
      */
     public function baselineFor(string $modelClass): array
     {
-        return DB::table('sync_snapshots')
+        return $this->tracking()->table('sync_snapshots')
             ->where('model_class', $modelClass)
             ->pluck('content_hash', 'record_id')
             ->all();
@@ -151,7 +160,7 @@ class StateManager
             ];
         }
 
-        DB::table('sync_snapshots')->upsert(
+        $this->tracking()->table('sync_snapshots')->upsert(
             $rows,
             ['model_class', 'record_id'],
             ['content_hash', 'synced_at', 'updated_at']

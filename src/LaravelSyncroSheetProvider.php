@@ -18,7 +18,9 @@
 namespace Zuko\SyncroSheet;
 
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\Events\MigrationsEnded;
 use Illuminate\Foundation\AliasLoader;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Revolution\Google\Sheets\SheetsClient;
 use Zuko\SyncroSheet\Services\Exporter;
@@ -28,6 +30,7 @@ use Zuko\SyncroSheet\Services\Reconciler;
 use Zuko\SyncroSheet\Services\StateManager;
 use Zuko\SyncroSheet\Services\SyncManager;
 use Zuko\SyncroSheet\Services\SyncScheduler;
+use Zuko\SyncroSheet\Services\TrackingDatabase;
 
 class LaravelSyncroSheetProvider extends ServiceProvider
 {
@@ -36,15 +39,41 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../config/syncro-sheet.php' => config_path('syncro-sheet.php'),
         ], 'config');
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        $this->bootTrackingDatabase();
         if ($this->app->runningInConsole()) {
             $this->commands([
                 Console\Commands\SheetSyncCommand::class,
                 Console\Commands\ScheduledSyncCommand::class,
+                Console\Commands\MigrateTrackingCommand::class,
             ]);
         }
 
         $this->registerSchedule();
+    }
+
+    /**
+     * Decide where the tracking tables live (see TrackingDatabase): a
+     * dedicated SQLite file manages its own schema (created on first boot,
+     * kept current after every `migrate`); any other connection uses the
+     * app's migrations as before.
+     */
+    private function bootTrackingDatabase(): void
+    {
+        $tracking = $this->app->make(TrackingDatabase::class);
+        $tracking->resolve();
+
+        if (! $tracking->usesDedicatedSqlite()) {
+            $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+            return;
+        }
+
+        $tracking->ensureSchema();
+        Event::listen(MigrationsEnded::class, function (MigrationsEnded $event) use ($tracking) {
+            if ($event->method === 'up') {
+                $tracking->migrate();
+            }
+        });
     }
 
     /**
@@ -102,6 +131,7 @@ class LaravelSyncroSheetProvider extends ServiceProvider
         $this->app->singleton(Reconciler::class);
         $this->app->singleton(GoogleClient::class);
         $this->app->singleton(SyncScheduler::class);
+        $this->app->singleton(TrackingDatabase::class);
         // Register facade
         $loader = AliasLoader::getInstance();
         $loader->alias('SyncroSheet', \Zuko\SyncroSheet\Facades\SyncroSheet::class);

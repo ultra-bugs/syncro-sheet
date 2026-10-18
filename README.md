@@ -22,6 +22,7 @@
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
+  - [Tracking database](#tracking-database)
 - [Basic Usage](#basic-usage)
 - [Advanced Usage](#advanced-usage)
 - [Best Practices](#best-practices)
@@ -62,6 +63,9 @@ Publish the configuration and migrations:
 php artisan vendor:publish --provider="Zuko\SyncroSheet\LaravelSyncroSheetProvider"
 php artisan migrate
 ```
+
+> By default the tracking tables go to the package's own SQLite file, created
+> on first boot — see [Tracking database](#tracking-database).
 
 ## Configuration
 
@@ -105,9 +109,30 @@ return [
         'import'          => ['use_batch_upsert' => false],
         'reconcile'       => ['hash_ignore' => ['updated_at']],
     ],
+    'database' => [
+        'connection'      => env('SYNCRO_SHEET_DB_CONNECTION'),   // null = own SQLite file (see below)
+        'sqlite_database' => env('SYNCRO_SHEET_SQLITE_DATABASE'), // null = storage/syncro-sheet/tracking.sqlite
+    ],
     // 'logging', 'sheets', 'notifications', 'scheduler' — see the published config
 ];
 ```
+
+### Tracking database
+
+Run history and reconcile baselines (`sync_states`, `sync_entries`,
+`sync_snapshots`) are kept apart from your business data. The provider decides
+where, on boot:
+
+| `database.connection` | `pdo_sqlite` | Tracking tables live in | Schema |
+|---|---|---|---|
+| set (e.g. `pgsql`) | — | that connection | `php artisan migrate` |
+| `null` | available | its own SQLite file (`storage/syncro-sheet/tracking.sqlite`, connection `syncro-sheet`, WAL) | created on first boot; pending migrations applied after every `php artisan migrate` and by `php artisan syncro-sheet:migrate` |
+| `null` | missing | the app's default connection | `php artisan migrate` — and a warning (at most once a day) on both the package log and the app's default log channel |
+
+> Upgrading from a version that kept them in the app database: set
+> `SYNCRO_SHEET_DB_CONNECTION` to that connection to keep using the existing
+> rows; otherwise the SQLite file starts empty (the next two-way sync only
+> re-baselines records — rows that already agree are not rewritten).
 
 ## Basic Usage
 
@@ -265,8 +290,11 @@ $syncState = SyncroSheet::importPartial(Product::class, [1, 2, 3]);
 > - Soft-deleted records are left alone: never re-created, never updated.
 > - **Rows without a key** (typed on the sheet) are created in the DB and the
 >   new key is written back into their key cell, so they match from then on.
->   `fromSheetRow()` returning `[]` marks a row that is not a record (date
->   separator, total, blank line) — it is left alone. Rows are re-read right
+>   Whether a row may become a record is the model's call:
+>   `InteractsWithSheet::canImportSheetRow()` asks the model's
+>   `shouldImportSheetRow(array $row): bool` hook when it defines one (date
+>   separators, totals and blank lines answer `false`); a row whose
+>   `fromSheetRow()` is `[]` is never created either. Rows are re-read right
 >   before the key is written: one that was edited or moved meanwhile (a row
 >   inserted above) waits for the next run. Creates and the write-back share a
 >   DB transaction, so a failed sheet write leaves no record behind.
@@ -390,23 +418,50 @@ php artisan sheet:scheduled-sync
 
 ### 1. Custom Data Transformation
 
+How a model's data is written to (and read from) the sheet lives in a
+`DataTransformer`. Subclass it and name it from the model's `sheetTransformer()`
+hook — `InteractsWithSheet::getSheetTransformer()` picks it up, and every write
+(export, in-place update, append, key write-back), read and content hash of
+that model goes through it.
+
 ```php
+use Zuko\SyncroSheet\Contracts\SheetExportable;
 use Zuko\SyncroSheet\Services\DataTransformer;
 
 class ProductTransformer extends DataTransformer
 {
+    // Record -> sheet row (positional or header => value); formatted afterwards by formatValue().
     protected function transformRecord(SheetExportable $record): array
     {
         return [
-            'ID' => $record->id,
+            'id' => $record->id,
             'Product Name' => $record->name,
-            'Price' => number_format($record->price, 2),
-            'In Stock' => $record->stock > 0 ? 'Yes' : 'No',
-            'Last Updated' => $record->updated_at->format('Y-m-d H:i:s')
+            'Price' => round((float) $record->price, 2), // keep it a number
+            'In Stock' => $record->stock > 0,             // bool -> "Yes" / "No"
         ];
+    }
+
+    // Cell value on read (before fromSheetRow()).
+    protected function parseValue($value)
+    {
+        return parent::parseValue($value);
+    }
+}
+
+class Product extends Model implements SheetSyncable
+{
+    use InteractsWithSheet;
+
+    public function sheetTransformer(): string
+    {
+        return ProductTransformer::class; // or an instance
     }
 }
 ```
+
+> Keep the codec symmetric: what `transformRecord()` / `formatValue()` write,
+> `parseValue()` + `fromSheetRow()` must read back to the same attributes, or
+> every import will change the record.
 
 ### 2. Event Listeners
 

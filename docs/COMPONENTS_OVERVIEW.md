@@ -58,6 +58,9 @@ the overlapping-sounding terms.
 | **SyncSnapshot** | model | Current content-hash baseline per record (reconcile) | a per-run log |
 | **GoogleClient** | service | revolution wrapper: read/append/updateRows/headers/clear + rate limit | — |
 | **SyncManager** | service | Orchestrator/entry: fullSync/partialSync, importFull/importPartial, sync | SyncScheduler |
+| **TrackingDatabase** | service | Resolves (in boot) where the tracking tables live: configured connection, own SQLite file, or app default (+ warning) | StateManager |
+| **canImportSheetRow / shouldImportSheetRow** | trait method / model hook | May a sheet row without a key become a record? | fromSheetRow() |
+| **getSheetTransformer / sheetTransformer** | trait method / model hook | The model's DataTransformer for writes, reads and hashes | the shared DataTransformer |
 
 # Component List & Summary
 
@@ -127,7 +130,10 @@ interface SheetSyncable extends SheetExportable, SheetImportable {}  // bidirect
   and sheet→DB via upsert; never deletes
 - Public API: `reconcile()` (driven by `SyncManager::sync()`)
 
-#### `DataTransformer` (value codec)
+#### `DataTransformer` (value codec, per model)
+- Resolved per model: `DataTransformer::forModel($model)` → the model's
+  `getSheetTransformer()` (hook `sheetTransformer()`), else the shared one.
+  Extension points: `transformRecord()`, `formatValue()`, `parseValue()`.
 - The single place that converts values **both ways**: model → cell on export
   (`transformBatch`/`formatRow`/`formatValue`) and cell → model on import (`parseRow`)
 - `canonicalHash()` builds a normalized content hash so the DB side and the sheet
@@ -258,6 +264,16 @@ return [
 - `ImportBatchJob` — upsert a chunk of already-read sheet rows (no re-read).
 - `ReconcileApplyJob` — apply a chunk of reconcile decisions from `decide()`.
 
+#### `TrackingDatabase`
+- In the provider's `boot()`: `syncro-sheet.database.connection` when set;
+  else connection `syncro-sheet` = own SQLite file when `pdo_sqlite` is
+  loaded (schema created on first boot, migrated after each `migrate` and by
+  `syncro-sheet:migrate`); else the app default, with a warning on the package
+  log and the app's default channel.
+- Tracking models (`UsesTrackingConnection`), `StateManager`, `ErrorHandler`
+  and the package migrations use the resolved connection; no query joins a
+  model table with a tracking table.
+
 # CLI & Jobs → component
 
 Surfaces that trigger a sync and the component each one drives.
@@ -266,6 +282,7 @@ Surfaces that trigger a sync and the component each one drives.
 |---|---|---|
 | `sheet:sync {model} --direction` | [@SheetSyncCommand.php](../src/Console/Commands/SheetSyncCommand.php) | `SyncManager::fullSync` / `importFull` / `sync` |
 | `sheet:scheduled-sync` | [@ScheduledSyncCommand.php](../src/Console/Commands/ScheduledSyncCommand.php) | `SyncScheduler::run` → driver |
+| `syncro-sheet:migrate` | [@MigrateTrackingCommand.php](../src/Console/Commands/MigrateTrackingCommand.php) | `TrackingDatabase::migrate` (own SQLite file) |
 | `PartialSyncJob` | [@PartialSyncJob.php](../src/Jobs/PartialSyncJob.php) | `SyncManager::partialSync` (export chunk) |
 | `PartialImportJob` | [@PartialImportJob.php](../src/Jobs/PartialImportJob.php) | `SyncManager::importPartial` (import chunk) |
 | `ImportBatchJob` | [@ImportBatchJob.php](../src/Jobs/ImportBatchJob.php) | `Importer::importRows` (queue import) |
@@ -454,6 +471,7 @@ stateDiagram-v2
 |---|---|---|
 | **REVIEW** | Queue export fans out *all* primary keys each run; the "not synced in 7 days" filter is not applied on this path yet. | [@QueueDriver.php](../src/Services/Drivers/QueueDriver.php) |
 | **REVIEW** | Queue reconcile apply jobs do not open a per-chunk `SyncState`, so that path has no per-run audit row. | [@ReconcileApplyJob.php](../src/Jobs/ReconcileApplyJob.php) |
+| **NOTE** | Model hooks (import gate, per-model transformer) + tracking connection | [@20261018_model-hooks-and-tracking-connection.md](agent-plans/20261018_model-hooks-and-tracking-connection.md) |
 | **NOTE** | Key by column index; rows without a key are created and get their key written back | [@20261018_sheet-key-column-index.md](agent-plans/20261018_sheet-key-column-index.md) |
 | **NOTE** | Real-run defects and their fixes (positional rows, append anchoring, typed values, guarded keys, soft deletes, read-only columns) | [@20261018_real-run-fixes.md](agent-plans/20261018_real-run-fixes.md) |
 | **REVIEW** | Only numeric primary keys are supported — `sync_entries.record_id` / `sync_snapshots.record_id` are `bigInteger`. | [@create_sync_entries_table.php](../database/migrations/2024_06_01_000001_create_sync_entries_table.php) |

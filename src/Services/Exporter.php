@@ -19,6 +19,7 @@ namespace Zuko\SyncroSheet\Services;
 
 use Illuminate\Database\Eloquent\Builder;
 use Zuko\SyncroSheet\Contracts\SheetExportable;
+use Zuko\SyncroSheet\Models\SyncEntry;
 use Zuko\SyncroSheet\Models\SyncState;
 
 /**
@@ -50,7 +51,9 @@ class Exporter
             );
         }
 
-        return $this->appendRecords($model, $this->buildFullSyncQuery($modelClass, $syncState), $syncState);
+        [$query, $skip] = $this->buildFullSyncQuery($modelClass, $syncState);
+
+        return $this->appendRecords($model, $query, $syncState, $skip);
     }
 
     /**
@@ -65,7 +68,10 @@ class Exporter
      * Append the records of $query in chunks, each value placed under its
      * header's column on the sheet, after the last row in use.
      */
-    private function appendRecords(SheetExportable $model, Builder $query, SyncState $syncState): array
+    /**
+     * @param  array<string, true>|null  $skip  record keys to leave out (synced recently)
+     */
+    private function appendRecords(SheetExportable $model, Builder $query, SyncState $syncState, ?array $skip = null): array
     {
         $batchSize = method_exists($model, 'getBatchSize')
             ? $model->getBatchSize()
@@ -73,14 +79,21 @@ class Exporter
 
         [$sheetHeaders, $lastRow] = $this->ensureHeaders($model);
         $modelHeaders = $this->modelHeaders($model);
+        $codec = $this->transformer->forModel($model);
         $totalProcessed = 0;
         $lastProcessedId = null;
 
         // chunkById, not chunk(): every processed batch is recorded in
         // sync_entries, which the full-sync query filters on, so offset paging
         // would skip records.
-        $query->chunkById($batchSize, function ($records) use ($model, $sheetHeaders, $modelHeaders, $syncState, &$lastRow, &$totalProcessed, &$lastProcessedId) {
-            $rows = $records->map(fn ($record) => $this->placeOnSheet($record->toSheetRow(), $modelHeaders, $sheetHeaders))->all();
+        $query->chunkById($batchSize, function ($records) use ($model, $sheetHeaders, $modelHeaders, $codec, $syncState, $skip, &$lastRow, &$totalProcessed, &$lastProcessedId) {
+            if ($skip !== null) {
+                $records = $records->reject(fn ($record) => isset($skip[(string) $record->getKey()]))->values();
+                if ($records->isEmpty()) {
+                    return;
+                }
+            }
+            $rows = $records->map(fn ($record) => $this->placeOnSheet($codec->recordToAssoc($record, $modelHeaders), $sheetHeaders, $codec))->all();
 
             $this->googleClient->appendRows($model->getSheetIdentifier(), $model->getSheetName(), $rows, $lastRow);
             $lastRow += count($rows);
@@ -101,16 +114,14 @@ class Exporter
     }
 
     /**
-     * One toSheetRow() (positional or header-keyed) -> list aligned to the
-     * sheet's header row; columns the model does not know stay blank.
+     * One record (header => value) -> list aligned to the sheet's header row;
+     * columns the model does not know stay blank.
      *
      * @return array<int, mixed>
      */
-    private function placeOnSheet(array $row, array $modelHeaders, array $sheetHeaders): array
+    private function placeOnSheet(array $assoc, array $sheetHeaders, DataTransformer $codec): array
     {
-        $assoc = $this->transformer->toAssoc($row, $modelHeaders);
-
-        return $this->transformer->formatRow($assoc, array_map(
+        return $codec->formatRow($assoc, array_map(
             static fn ($header) => array_key_exists($header, $assoc) ? $header : '',
             $sheetHeaders
         ));
@@ -130,7 +141,14 @@ class Exporter
             : array_keys($model->toSheetRow());
     }
 
-    private function buildFullSyncQuery(string $modelClass, SyncState $syncState): Builder
+    /**
+     * Records not exported in the last 7 days. The filter is a subquery when the
+     * tracking tables share the model's connection; otherwise the recent keys
+     * are loaded from the tracking connection and skipped per chunk.
+     *
+     * @return array{0: Builder, 1: array<string, true>|null}
+     */
+    private function buildFullSyncQuery(string $modelClass, SyncState $syncState): array
     {
         $model = new $modelClass;
         $keyName = $model->getKeyName();
@@ -140,15 +158,24 @@ class Exporter
             $query->where($keyName, '>', $syncState->last_processed_id);
         }
 
-        // Get records that haven't been synced in the last 7 days
-        $query->whereNotExists(function ($query) use ($modelClass, $keyName) {
-            $query->from('sync_entries')
+        $recent = SyncEntry::query()
+            ->where('model_class', $modelClass)
+            ->where('synced_at', '>', now()->subDays(7));
+
+        if ($recent->getConnection()->getName() !== $model->getConnection()->getName()) {
+            $skip = $recent->distinct()->pluck('record_id')->mapWithKeys(fn ($key) => [(string) $key => true])->all();
+
+            return [$query->orderBy($keyName), $skip];
+        }
+
+        $query->whereNotExists(function ($query) use ($modelClass, $model) {
+            $query->from((new SyncEntry)->getTable())
                 ->where('model_class', $modelClass)
                 ->where('synced_at', '>', now()->subDays(7))
-                ->whereColumn('record_id', $keyName);
+                ->whereColumn('record_id', $model->getQualifiedKeyName());
         });
 
-        return $query->orderBy($keyName);
+        return [$query->orderBy($keyName), null];
     }
 
     private function buildPartialSyncQuery(string $modelClass, array $recordIds): Builder

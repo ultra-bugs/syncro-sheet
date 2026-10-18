@@ -238,7 +238,7 @@ class Importer
      */
     public function createFromSheetRows(SheetImportable $model, array $rows, ?callable $writeBack = null): array
     {
-        $rows = array_filter($rows, fn (array $row) => $this->newRecordAttributes($model, $row['assoc']) !== []);
+        $rows = array_filter($rows, fn (array $row) => $this->canCreateFromSheetRow($model, $row['assoc']));
         $rows = $this->stillUnchanged($model, $rows);
         if (empty($rows)) {
             return [];
@@ -259,7 +259,24 @@ class Importer
     }
 
     /**
-     * fromSheetRow() of a new instance, without the key ([] = not a record).
+     * May this keyless sheet row become a record? The model's
+     * canImportSheetRow() (InteractsWithSheet, which asks the model's
+     * shouldImportSheetRow() hook) decides, and the row must map to
+     * attributes.
+     *
+     * @param  array<string, mixed>  $assoc  parsed sheet row
+     */
+    public function canCreateFromSheetRow(SheetImportable $model, array $assoc): bool
+    {
+        if (method_exists($model, 'canImportSheetRow') && ! $model->canImportSheetRow($assoc)) {
+            return false;
+        }
+
+        return $this->newRecordAttributes($model, $assoc) !== [];
+    }
+
+    /**
+     * fromSheetRow() of a new instance, without the key ([] = nothing to create).
      */
     public function newRecordAttributes(SheetImportable $model, array $assoc): array
     {
@@ -313,6 +330,7 @@ class Importer
     {
         $prepared = ['keyed' => [], 'keyless' => []];
         $keyIndex = $model->getSheetKeyColumnIndex();
+        $codec = $this->transformer->forModel($model);
 
         foreach ($chunk as $offset => $row) {
             if ($this->trimRow($row) === []) {
@@ -320,7 +338,7 @@ class Importer
             }
 
             $keyValue = $this->normalizeKey($row[$keyIndex] ?? null);
-            $assoc = $this->transformer->parseRow($this->rowToAssoc($headers, $row));
+            $assoc = $codec->parseRow($this->rowToAssoc($headers, $row));
             $assoc[$model->getSheetKeyColumn()] = $keyValue;
 
             if ($keyValue === null) {
