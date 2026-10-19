@@ -18,10 +18,13 @@
 namespace Zuko\SyncroSheet\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Models\Concerns\UsesTrackingConnection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class SyncEntry extends Model
 {
+    use UsesTrackingConnection;
+
     protected $fillable = [
         'model_class',
         'record_id',

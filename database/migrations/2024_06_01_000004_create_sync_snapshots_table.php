@@ -21,26 +21,32 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * The tracking tables live on the connection TrackingDatabase resolved.
+     */
+    public function getConnection(): ?string
+    {
+        return \Zuko\SyncroSheet\Services\TrackingDatabase::connectionName();
+    }
+
     public function up(): void
     {
-        Schema::create('sync_states', static function (Blueprint $table) {
+        Schema::create('sync_snapshots', static function (Blueprint $table) {
             $table->id();
             $table->string('model_class');
-            $table->enum('sync_type', ['full', 'partial']);
-            $table->enum('status', ['pending', 'running', 'completed', 'failed']);
-            $table->timestamp('started_at')->nullable();
-            $table->timestamp('completed_at')->nullable();
-            $table->integer('total_processed')->default(0);
-            $table->bigInteger('last_processed_id')->nullable();
-            $table->text('error_message')->nullable();
+            $table->bigInteger('record_id');
+            $table->string('content_hash');
+            $table->timestamp('synced_at');
             $table->timestamps();
 
-            $table->index(['model_class', 'sync_type', 'status']);
+            // One baseline row per record; used by the reconciler to detect
+            // which side (DB or sheet) actually changed since the last sync.
+            $table->unique(['model_class', 'record_id']);
         });
     }
 
     public function down(): void
     {
-        Schema::dropIfExists('sync_states');
+        Schema::dropIfExists('sync_snapshots');
     }
 };

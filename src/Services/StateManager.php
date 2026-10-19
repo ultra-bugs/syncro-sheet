@@ -17,28 +17,90 @@
 
 namespace Zuko\SyncroSheet\Services;
 
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Zuko\SyncroSheet\Models\SyncState;
 
 class StateManager
 {
+    /** Slack past defaults.timeout before a `running` run counts as abandoned. */
+    public const ABANDON_GRACE_SECONDS = 60;
+
+    /** Rows per tracking insert: stays under SQLite's bound-parameter limit (32 766). */
+    public const WRITE_BATCH = 500;
+
     public function __construct(
         private readonly SyncLogger $logger
     ) {
     }
 
     /**
+     * Connection holding the tracking tables.
+     */
+    private function tracking(): Connection
+    {
+        return DB::connection(TrackingDatabase::connectionName());
+    }
+
+    /**
      * Initialize a new sync state
      */
-    public function initializeSync(string $modelClass, string $syncType, string $syncMode): SyncState
-    {
+    public function initializeSync(
+        string $modelClass,
+        string $syncType,
+        string $writeMode,
+        string $direction = SyncManager::DIRECTION_EXPORT
+    ): SyncState {
+        $this->failAbandonedRuns($modelClass);
+
         return SyncState::create([
             'model_class' => $modelClass,
             'sync_type' => $syncType,
-            'sync_mode' => $syncMode,
+            'direction' => $direction,
+            'write_mode' => $writeMode,
             'status' => 'running',
             'started_at' => now(),
         ]);
+    }
+
+    /**
+     * End the model's runs still `running` past the run timeout: their worker
+     * died (timeout kill, out of memory, deploy) before reporting a result.
+     */
+    public function failAbandonedRuns(string $modelClass): int
+    {
+        $after = (int) config('syncro-sheet.defaults.timeout', 600) + self::ABANDON_GRACE_SECONDS;
+
+        $abandoned = SyncState::query()
+            ->where('model_class', $modelClass)
+            ->where('status', 'running')
+            ->where('started_at', '<', now()->subSeconds($after))
+            ->get();
+
+        foreach ($abandoned as $syncState) {
+            $this->failSync($syncState, "Abandoned: no result after {$after} s (worker stopped?)");
+        }
+
+        return $abandoned->count();
+    }
+
+    /**
+     * End the model's runs still `running` now, e.g. from a queue job's
+     * failed() when the worker times it out (the process is about to be
+     * killed, so the run would otherwise wait for failAbandonedRuns()).
+     */
+    public function failRunningRuns(string $modelClass, string $error): int
+    {
+        $running = SyncState::query()
+            ->where('model_class', $modelClass)
+            ->where('status', 'running')
+            ->get();
+
+        foreach ($running as $syncState) {
+            $this->failSync($syncState, $error);
+        }
+
+        return $running->count();
     }
 
     /**
@@ -59,7 +121,9 @@ class StateManager
             ];
         }, $recordIds);
 
-        DB::table('sync_entries')->insert($entries);
+        foreach (array_chunk($entries, self::WRITE_BATCH) as $batch) {
+            $this->tracking()->table('sync_entries')->insert($batch);
+        }
 
         $syncState->update([
             'total_processed' => $syncState->total_processed + count($recordIds),
@@ -105,5 +169,61 @@ class StateManager
             ->where('status', 'completed')
             ->latest('completed_at')
             ->first();
+    }
+
+    /**
+     * Load the reconcile baseline for a model: record_id => the content hash
+     * of each side when they were last in sync (sync_snapshots; a row written
+     * before sheet_hash existed gives both sides content_hash).
+     *
+     * @return array<string, array{db: string, sheet: string}>
+     */
+    public function baselineFor(string $modelClass): array
+    {
+        return $this->tracking()->table('sync_snapshots')
+            ->where('model_class', $modelClass)
+            ->get(['record_id', 'content_hash', 'sheet_hash'])
+            ->mapWithKeys(fn ($row) => [(string) $row->record_id => [
+                'db' => $row->content_hash,
+                'sheet' => $row->sheet_hash ?? $row->content_hash,
+            ]])
+            ->all();
+    }
+
+    /**
+     * Upsert the reconcile baseline for a batch of records: the content hash
+     * each side had when the two were last in sync. A single hash means both
+     * sides had that form.
+     *
+     * @param  array<int|string, string|array{db: string, sheet: string}>  $hashesByRecordId
+     */
+    public function storeSnapshots(string $modelClass, array $hashesByRecordId): void
+    {
+        if (empty($hashesByRecordId)) {
+            return;
+        }
+
+        $now = now();
+
+        $rows = [];
+        foreach ($hashesByRecordId as $recordId => $hash) {
+            $rows[] = [
+                'model_class' => $modelClass,
+                'record_id' => $recordId,
+                'content_hash' => is_array($hash) ? $hash['db'] : $hash,
+                'sheet_hash' => is_array($hash) ? $hash['sheet'] : $hash,
+                'synced_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        }
+
+        foreach (array_chunk($rows, self::WRITE_BATCH) as $batch) {
+            $this->tracking()->table('sync_snapshots')->upsert(
+                $batch,
+                ['model_class', 'record_id'],
+                ['content_hash', 'sheet_hash', 'synced_at', 'updated_at']
+            );
+        }
     }
 }

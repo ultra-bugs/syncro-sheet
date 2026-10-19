@@ -21,26 +21,28 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    public function up(): void
+    /**
+     * The tracking tables live on the connection TrackingDatabase resolved.
+     */
+    public function getConnection(): ?string
     {
-        Schema::create('sync_entries', static function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('sync_state_id')->constrained()->cascadeOnDelete();
-            $table->string('model_class');
-            $table->bigInteger('record_id');
-            $table->timestamp('synced_at');
-            $table->enum('sync_type', ['full', 'partial']);
-            $table->enum('status', ['success', 'failed']);
-            $table->text('error_message')->nullable();
-            $table->timestamps();
+        return \Zuko\SyncroSheet\Services\TrackingDatabase::connectionName();
+    }
 
-            $table->index(['model_class', 'record_id', 'synced_at']);
-            $table->index(['sync_state_id', 'status']);
+    public function up()
+    {
+        Schema::table('sync_states', static function (Blueprint $table) {
+            $table->enum('write_mode', \Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_WRITE_MODES)
+                ->default(\Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_WRITE_MODES[0])
+                ->after('sync_type')
+                ->index();
         });
     }
 
-    public function down(): void
+    public function down()
     {
-        Schema::dropIfExists('sync_entries');
+        Schema::table('sync_states', static function (Blueprint $table) {
+            $table->dropColumn('write_mode');
+        });
     }
 };

@@ -21,9 +21,13 @@ use Illuminate\Support\Facades\Facade;
 use Zuko\SyncroSheet\Services\SyncManager;
 
 /**
- * @method static \Zuko\SyncroSheet\Models\SyncState fullSync(string $modelClass)
- * @method static \Zuko\SyncroSheet\Models\SyncState partialSync(string $modelClass, array $recordIds)
- * @method static \Zuko\SyncroSheet\Models\SyncState|null getLastSync(string $modelClass)
+ * @method static \Zuko\SyncroSheet\Models\SyncState fullSync(string $modelClass, array $options = [])
+ * @method static \Zuko\SyncroSheet\Models\SyncState partialSync(string $modelClass, array $recordIds, array $options = [])
+ * @method static \Zuko\SyncroSheet\Models\SyncState importFull(string $modelClass, array $options = [])
+ * @method static \Zuko\SyncroSheet\Models\SyncState importPartial(string $modelClass, array $recordIds, array $options = [])
+ * @method static \Zuko\SyncroSheet\Models\SyncState sync(string $modelClass, array $options = [])
+ * @method static array preview(string $modelClass)
+ * @method static void configureUsing(\Closure $callback)
  *
  * @see \Zuko\SyncroSheet\Services\SyncManager
  */

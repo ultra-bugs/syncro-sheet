@@ -19,12 +19,13 @@ namespace Zuko\SyncroSheet\Notifications;
 
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Messages\SlackMessage;
+use Zuko\SyncroSheet\Models\SyncState;
 
 class SyncFailedNotification extends BaseNotification
 {
     public function __construct(
         SyncState $syncState,
-        private readonly \Exception $exception
+        private readonly \Throwable $exception
     ) {
         parent::__construct($syncState);
     }

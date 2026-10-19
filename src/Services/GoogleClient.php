@@ -18,15 +18,28 @@
 namespace Zuko\SyncroSheet\Services;
 
 use Google\Client as GoogleAPIClient;
+use Closure;
+use Google\Service\Exception as GoogleServiceException;
 use Google\Service\Sheets as GoogleSheets;
+use Google\Service\Sheets\BatchUpdateValuesRequest;
+use Google\Service\Sheets\ValueRange;
 use Revolution\Google\Sheets\Facades\Sheets;
 use Zuko\SyncroSheet\Exceptions\GoogleSheetsException;
 
 class GoogleClient
 {
+    /** readRows(): rows apart by at most this many are read as one span. */
+    public const READ_ROWS_MAX_GAP = 50;
+
+    /** readRows(): spans (ranges) per values.batchGet request. */
+    public const READ_ROWS_RANGES_PER_REQUEST = 100;
+
     private array $rateLimits = [];
 
     private $sheetsClient = null;
+
+    /** ClientConfigurators::version() the cached client was built with (null: not built here). */
+    private ?int $builtWith = null;
 
     public function __construct(
         private readonly TokenManager $tokenManager,
@@ -39,7 +52,9 @@ class GoogleClient
      */
     private function getClient()
     {
-        if ($this->sheetsClient) {
+        $configurators = app(ClientConfigurators::class);
+        // A callback added since the client was built: build it again.
+        if ($this->sheetsClient && ($this->builtWith === null || $this->builtWith === $configurators->version())) {
             return $this->sheetsClient;
         }
 
@@ -48,24 +63,95 @@ class GoogleClient
             $token = $this->tokenManager->getToken();
             $this->sheetsClient = Sheets::setAccessToken($token);
         } else {
-            // Non-Laravel environment - manual setup using config
             $client = new GoogleAPIClient($this->getGoogleConfig());
 
             // Set required scopes for sheets
             $client->setScopes([GoogleSheets::DRIVE, GoogleSheets::SPREADSHEETS]);
 
-            // Handle authentication based on config
-            if (config('google.service.enable')) {
-                $this->setupServiceAccount($client);
-            } else {
-                $this->setupOAuth($client);
+            // Config first, then the configureUsing() callbacks, which may add
+            // to or override it.
+            $source = $this->applyConfiguredCredentials($client);
+            $configurators->apply($client);
+
+            if (! self::hasCredentials($client)) {
+                throw new GoogleSheetsException(
+                    'No Google credentials configured. Checked: SyncroSheet::configureUsing() callbacks ('
+                    .($configurators->isEmpty() ? 'none' : 'set no credentials').'), '
+                    .'syncro-sheet.google.credentials (SYNCRO_SHEET_GOOGLE_CREDENTIALS: JSON path, JSON or array), '
+                    .'google.service.* (GOOGLE_SERVICE_ENABLED=true + GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION), '
+                    .'OAuth (GOOGLE_CLIENT_ID). A running queue worker keeps the config it booted with: '
+                    .'php artisan queue:restart after changing it.'
+                );
             }
+
+            $this->logger->info('Google client: credentials from '.match (true) {
+                $configurators->isEmpty() => $source,
+                $source === null => 'configureUsing()',
+                default => "{$source}, then configureUsing()",
+            });
 
             $service = new GoogleSheets($client);
             $this->sheetsClient = Sheets::setService($service);
         }
 
+        $this->builtWith = $configurators->version();
+
         return $this->sheetsClient;
+    }
+
+    /**
+     * Credentials from config, first match: the package's own, revolution's
+     * service account, OAuth. Returns the source applied, null when none is
+     * configured (configureUsing() callbacks may still provide them).
+     */
+    private function applyConfiguredCredentials(GoogleAPIClient $client): ?string
+    {
+        if (filled($credentials = config('syncro-sheet.google.credentials'))) {
+            $this->setupServiceAccount($client, self::decodeCredentials($credentials));
+
+            return 'syncro-sheet.google.credentials';
+        }
+
+        if (config('google.service.enable')) {
+            $this->setupServiceAccount($client, config('google.service.file'));
+
+            return 'google.service';
+        }
+
+        if (filled(config('google.client_id')) || filled($this->tokenManager->getToken())) {
+            $this->setupOAuth($client);
+
+            return 'oauth';
+        }
+
+        return null;
+    }
+
+    /** A service-account JSON given inline (env var) instead of as a path. */
+    private static function decodeCredentials(array|string $credentials): array|string
+    {
+        if (is_string($credentials) && str_starts_with(ltrim($credentials), '{')) {
+            $decoded = json_decode($credentials, true);
+            if (! is_array($decoded)) {
+                throw new GoogleSheetsException('syncro-sheet.google.credentials looks like JSON but does not parse: '.json_last_error_msg());
+            }
+
+            return $decoded;
+        }
+
+        return $credentials;
+    }
+
+    /**
+     * Does the client carry any credentials: a service-account key, an OAuth
+     * client id, an access token or application default credentials?
+     */
+    public static function hasCredentials(GoogleAPIClient $client): bool
+    {
+        return filled($client->getConfig('signing_key'))
+            || filled($client->getClientId())
+            || filled($client->getAccessToken())
+            || $client->isUsingApplicationDefaultCredentials();
     }
 
     /**
@@ -88,18 +174,22 @@ class GoogleClient
     /**
      * Setup service account authentication
      */
-    private function setupServiceAccount(GoogleAPIClient $client): void
+    private function setupServiceAccount(GoogleAPIClient $client, array|string|null $serviceAccountFile): void
     {
-        $serviceAccountFile = config('google.service.file');
-
         if (is_array($serviceAccountFile)) {
             $client->setAuthConfig($serviceAccountFile);
 
             return;
         }
 
-        // Search for the file in multiple locations
+        if (blank($serviceAccountFile)) {
+            throw new GoogleSheetsException('Service account enabled but no credentials file is set (GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION).');
+        }
+
+        // Search for the file in multiple locations; an absolute path (the
+        // usual GOOGLE_SERVICE_ACCOUNT_JSON_LOCATION form) is tried as-is first.
         $searchPaths = [
+            $serviceAccountFile,
             base_path($serviceAccountFile),
             resource_path($serviceAccountFile),
             resource_path('credentials'.DIRECTORY_SEPARATOR.$serviceAccountFile),
@@ -126,6 +216,8 @@ class GoogleClient
      */
     private function setupOAuth(GoogleAPIClient $client): void
     {
+        $token = $this->tokenManager->getToken();
+
         $client->setClientId(config('google.client_id'));
         $client->setClientSecret(config('google.client_secret'));
         $client->setRedirectUri(config('google.redirect_uri'));
@@ -133,10 +225,24 @@ class GoogleClient
         $client->setApprovalPrompt(config('google.approval_prompt', 'auto'));
 
         // Set the token if available
-        $token = $this->tokenManager->getToken();
         if ($token) {
             $client->setAccessToken($token);
         }
+    }
+
+    /**
+     * The (stateful, shared) revolution client scoped to one sheet and range.
+     *
+     * The sheet name is always quoted so names that look like A1 references
+     * ("Oct25", "2025") address the tab, and the range / render options are
+     * reset on every call so state never leaks from a previous operation.
+     */
+    private function scoped(string $spreadsheetId, string $sheetName, string $range = '')
+    {
+        return $this->getClient()
+            ->spreadsheet($spreadsheetId)
+            ->sheet("'".str_replace("'", "''", $sheetName)."'")
+            ->range($range);
     }
 
     /**
@@ -144,29 +250,12 @@ class GoogleClient
      */
     public function writeBatch(string $spreadsheetId, string $sheetName, array $rows, $model = null): void
     {
-        $this->checkRateLimit();
-
-        try {
-            $client = $this->getClient()->spreadsheet($spreadsheetId)->sheet($sheetName);
-
-            // Check if sheet is empty and needs headers
-            $existingData = $client->all();
-            if (empty($existingData)) {
-                // Generate and write headers
-                $headers = $this->generateHeaders($model, $rows);
-                $client->update([$headers]);
-            }
-
-            // Write data
-            $client->append($rows);
-
-            $this->updateRateLimit();
-
-            $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
-        } catch (\Exception $e) {
-            $this->logger->error("Failed to write to Google Sheets: {$e->getMessage()}");
-            throw new GoogleSheetsException("Failed to write to Google Sheets: {$e->getMessage()}", 0, $e);
+        $existingData = $this->readSheet($spreadsheetId, $sheetName);
+        if (empty($existingData)) {
+            $this->setHeaders($spreadsheetId, $sheetName, $this->generateHeaders($model, $rows));
         }
+
+        $this->appendRows($spreadsheetId, $sheetName, array_map('array_values', $rows), max(count($existingData), 1));
     }
 
     /**
@@ -174,15 +263,8 @@ class GoogleClient
      */
     public function clearSheet(string $spreadsheetId, string $sheetName): void
     {
-        $this->checkRateLimit();
-
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->clear();
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName)->clear());
 
             $this->logger->info("Cleared sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -192,24 +274,68 @@ class GoogleClient
     }
 
     /**
-     * Read all values from a sheet
+     * Read all values from a sheet.
+     *
+     * Values come back typed (numbers as numbers, no display formatting) and
+     * date cells as their formatted string, per `syncro-sheet.sheets.read`.
      */
     public function readSheet(string $spreadsheetId, string $sheetName): array
     {
-        $this->checkRateLimit();
-
         try {
-            $values = $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->all();
-
-            $this->updateRateLimit();
-
-            return $values;
+            return $this->call(fn () => $this->scoped($spreadsheetId, $sheetName)
+                ->valueRenderOption(config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'))
+                ->dateTimeRenderOption(config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'))
+                ->all());
         } catch (\Exception $e) {
             $this->logger->error("Failed to read from Google Sheets: {$e->getMessage()}");
             throw new GoogleSheetsException("Failed to read from Google Sheets: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Re-read specific rows (1-based absolute indexes) with the same render
+     * options as readSheet(): rows merged into spans (rowSpans()), at most
+     * READ_ROWS_RANGES_PER_REQUEST spans per values.batchGet.
+     *
+     * @param  array<int, int>  $rowIndexes
+     * @return array<int, array<int, mixed>>  rowIndex => cell values (trailing blanks trimmed)
+     */
+    public function readRows(string $spreadsheetId, string $sheetName, array $rowIndexes): array
+    {
+        if (empty($rowIndexes)) {
+            return [];
+        }
+
+        try {
+            $quoted = "'".str_replace("'", "''", $sheetName)."'";
+            $spans = self::rowSpans($rowIndexes);
+            $read = [];
+
+            // One range per span and a bounded number of ranges per request:
+            // a batchGet is a GET, its ranges travel in the URL.
+            foreach (array_chunk($spans, self::READ_ROWS_RANGES_PER_REQUEST) as $chunk) {
+                $response = $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchGet($spreadsheetId, [
+                    'ranges' => array_map(static fn (array $span) => "{$quoted}!{$span[0]}:{$span[1]}", $chunk),
+                    'valueRenderOption' => config('syncro-sheet.sheets.read.value_render_option', 'UNFORMATTED_VALUE'),
+                    'dateTimeRenderOption' => config('syncro-sheet.sheets.read.date_time_render_option', 'FORMATTED_STRING'),
+                ]));
+
+                foreach ($chunk as $position => [$first]) {
+                    foreach ($response->getValueRanges()[$position]->getValues() ?? [] as $offset => $values) {
+                        $read[$first + $offset] = $values;
+                    }
+                }
+            }
+
+            $rows = [];
+            foreach (array_values($rowIndexes) as $row) {
+                $rows[$row] = $read[$row] ?? [];
+            }
+
+            return $rows;
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to read rows from Google Sheets: {$e->getMessage()}");
+            throw new GoogleSheetsException("Failed to read rows from Google Sheets: {$e->getMessage()}", 0, $e);
         }
     }
 
@@ -218,20 +344,10 @@ class GoogleClient
      */
     public function getHeaders(string $spreadsheetId, string $sheetName): array
     {
-        $this->checkRateLimit();
-
         try {
-            $rows = $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->all();
-
-            $this->updateRateLimit();
-
-            return $rows[0] ?? [];
-        } catch (\Exception $e) {
-            $this->logger->error("Failed to get headers: {$e->getMessage()}");
-            throw new GoogleSheetsException("Failed to get headers: {$e->getMessage()}", 0, $e);
+            return $this->readSheet($spreadsheetId, $sheetName)[0] ?? [];
+        } catch (GoogleSheetsException $e) {
+            throw new GoogleSheetsException("Failed to get headers: {$e->getPrevious()?->getMessage()}", 0, $e);
         }
     }
 
@@ -240,15 +356,8 @@ class GoogleClient
      */
     public function setHeaders(string $spreadsheetId, string $sheetName, array $headers): void
     {
-        $this->checkRateLimit();
-
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->update([$headers]); // Update first row with headers
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName, 'A1')->update([array_values($headers)]));
 
             $this->logger->info("Set headers in sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -258,19 +367,50 @@ class GoogleClient
     }
 
     /**
-     * Append rows with headers
+     * Append associative rows (header => value), ordered by the sheet's header
+     * row. Kept for callers that build header-keyed rows; positions are
+     * resolved here instead of by the underlying client, which collapses
+     * blank/duplicate headers.
+     *
+     * @param  array<int, array<string, mixed>>  $rows
      */
     public function appendWithHeaders(string $spreadsheetId, string $sheetName, array $rows): void
     {
-        $this->checkRateLimit();
+        $values = $this->readSheet($spreadsheetId, $sheetName);
+        $headers = $values[0] ?? array_keys(reset($rows) ?: []);
+
+        $lists = array_map(static function (array $row) use ($headers) {
+            $list = [];
+            foreach ($headers as $position => $header) {
+                $list[$position] = $header === '' ? '' : ($row[$header] ?? '');
+            }
+
+            return $list;
+        }, $rows);
+
+        $this->appendRows($spreadsheetId, $sheetName, $lists, max(count($values), 1));
+    }
+
+    /**
+     * Append positional rows (lists starting at column A) after the given row.
+     *
+     * The append is anchored on the single cell A{afterRow + 1}: anchoring on
+     * the bare sheet name (or a full-width range) lets Google's table detection
+     * start the row at another column when the header row has gaps. A single
+     * empty anchor cell writes there; if a concurrent writer already used that
+     * row, Google appends after it instead of overwriting.
+     *
+     * @param  array<int, array<int, mixed>>  $rows
+     */
+    public function appendRows(string $spreadsheetId, string $sheetName, array $rows, int $afterRow): void
+    {
+        if (empty($rows)) {
+            return;
+        }
 
         try {
-            $this->getClient()
-                ->spreadsheet($spreadsheetId)
-                ->sheet($sheetName)
-                ->append($rows); // The client will handle header matching
-
-            $this->updateRateLimit();
+            $this->call(fn () => $this->scoped($spreadsheetId, $sheetName, 'A'.($afterRow + 1))
+                ->append(array_map('array_values', $rows), 'RAW', 'OVERWRITE'));
 
             $this->logger->info('Written '.count($rows)." rows to sheet {$sheetName}");
         } catch (\Exception $e) {
@@ -280,7 +420,110 @@ class GoogleClient
     }
 
     /**
-     * Generate headers from a SheetSyncable model or data
+     * Update cells of existing rows, addressed by their 1-based absolute sheet
+     * row index (row 1 is the header), in a single values.batchUpdate call.
+     *
+     * Each row's values are keyed by 0-based column index; a list writes from
+     * column A, a sparse map writes only the given columns (contiguous columns
+     * are grouped into one range), leaving every other cell untouched.
+     *
+     * @param  array<int, array<int, mixed>>  $rowsByIndex  rowIndex => [columnIndex => value]
+     */
+    public function updateRows(string $spreadsheetId, string $sheetName, array $rowsByIndex): void
+    {
+        $data = [];
+        $quoted = "'".str_replace("'", "''", $sheetName)."'";
+        foreach ($rowsByIndex as $index => $cells) {
+            foreach ($this->contiguousRuns($cells) as $start => $run) {
+                $end = $start + count($run) - 1;
+                $data[] = new ValueRange([
+                    'range' => $quoted.'!'.self::columnLetter($start).$index.':'.self::columnLetter($end).$index,
+                    'values' => [$run],
+                ]);
+            }
+        }
+
+        if (empty($data)) {
+            return;
+        }
+
+        try {
+            $this->call(fn () => $this->getClient()->getService()->spreadsheets_values->batchUpdate(
+                $spreadsheetId,
+                new BatchUpdateValuesRequest(['valueInputOption' => 'RAW', 'data' => $data])
+            ));
+
+            $this->logger->info('Updated '.count($rowsByIndex)." row(s) in sheet {$sheetName}");
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to update rows in Google Sheets: {$e->getMessage()}");
+            throw new GoogleSheetsException("Failed to update rows in Google Sheets: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Split a column-indexed cell map into runs of adjacent columns.
+     *
+     * @param  array<int, mixed>  $cells
+     * @return array<int, array<int, mixed>>  startColumn => values
+     */
+    private function contiguousRuns(array $cells): array
+    {
+        ksort($cells);
+
+        $runs = [];
+        $start = null;
+        $previous = null;
+        foreach ($cells as $column => $value) {
+            if ($start === null || $column !== $previous + 1) {
+                $start = $column;
+            }
+            $runs[$start][] = $value;
+            $previous = $column;
+        }
+
+        return $runs;
+    }
+
+    /**
+     * 0-based column index -> A1 column letters (0 => A, 25 => Z, 26 => AA).
+     */
+    /**
+     * Sorted 1-based row numbers -> [first, last] spans; a gap of at most
+     * READ_ROWS_MAX_GAP rows is read along and dropped.
+     *
+     * @param  array<int, int>  $rowIndexes
+     * @return array<int, array{0: int, 1: int}>
+     */
+    public static function rowSpans(array $rowIndexes): array
+    {
+        $rows = array_values(array_unique(array_map('intval', $rowIndexes)));
+        sort($rows);
+
+        $spans = [];
+        foreach ($rows as $row) {
+            $last = array_key_last($spans);
+            if ($last !== null && $row - $spans[$last][1] <= self::READ_ROWS_MAX_GAP + 1) {
+                $spans[$last][1] = $row;
+            } else {
+                $spans[] = [$row, $row];
+            }
+        }
+
+        return $spans;
+    }
+
+    public static function columnLetter(int $index): string
+    {
+        $letter = '';
+        for ($index++; $index > 0; $index = intdiv($index - 1, 26)) {
+            $letter = chr(65 + ($index - 1) % 26).$letter;
+        }
+
+        return $letter;
+    }
+
+    /**
+     * Generate headers from a SheetExportable model or data
      */
     private function generateHeaders($model = null, array $data = []): array
     {
@@ -300,15 +543,7 @@ class GoogleClient
         // Fallback to Excel notation (A, B, C, ...)
         $columnCount = empty($data) ? 26 : count(reset($data)); // Default to 26 columns if no data
 
-        return array_map(function ($num) {
-            $letter = '';
-            while ($num >= 0) {
-                $letter = chr(($num % 26) + 65).$letter;
-                $num = floor($num / 26) - 1;
-            }
-
-            return $letter;
-        }, range(0, $columnCount - 1));
+        return array_map(static fn (int $index) => self::columnLetter($index), range(0, $columnCount - 1));
     }
 
     /**
@@ -330,7 +565,8 @@ class GoogleClient
         });
 
         if (count($this->rateLimits) >= $maxRequests) {
-            $sleepTime = end($this->rateLimits) - (time() - $perSeconds) + 1;
+            // Wait until the oldest request of the window leaves it.
+            $sleepTime = reset($this->rateLimits) - (time() - $perSeconds) + 1;
             if ($sleepTime > 0) {
                 sleep($sleepTime);
             }
@@ -340,5 +576,40 @@ class GoogleClient
     private function updateRateLimit(): void
     {
         $this->rateLimits[] = time();
+    }
+
+    /**
+     * Run one API call under the client-side rate limit, retrying quota (429)
+     * and transient server errors (5xx) with exponential backoff + jitter, as
+     * Google recommends. Other errors are rethrown at once.
+     *
+     * @template T
+     *
+     * @param  Closure(): T  $operation
+     * @return T
+     */
+    private function call(Closure $operation): mixed
+    {
+        $retries = (int) config('syncro-sheet.sheets.retry.times', 5);
+        $delayMs = (int) config('syncro-sheet.sheets.retry.base_delay_ms', 2000);
+
+        for ($attempt = 0; ; $attempt++) {
+            $this->checkRateLimit();
+            try {
+                $result = $operation();
+                $this->updateRateLimit();
+
+                return $result;
+            } catch (GoogleServiceException $e) {
+                $this->updateRateLimit();
+                if ($attempt >= $retries || ! in_array($e->getCode(), [429, 500, 502, 503, 504], true)) {
+                    throw $e;
+                }
+
+                $waitMs = min($delayMs * (2 ** $attempt), 64000) + random_int(0, 500);
+                $this->logger->warning("Google Sheets API {$e->getCode()}, retry ".($attempt + 1)."/{$retries} in {$waitMs} ms");
+                usleep($waitMs * 1000);
+            }
+        }
     }
 }

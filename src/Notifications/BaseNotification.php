@@ -34,6 +34,16 @@ abstract class BaseNotification extends Notification
         return config('syncro-sheet.notifications.channels', ['mail']);
     }
 
+    public function toMail($notifiable): MailMessage
+    {
+        return $this->getMailMessage();
+    }
+
+    public function toSlack($notifiable): SlackMessage
+    {
+        return $this->getSlackMessage();
+    }
+
     protected function getModelName(): string
     {
         return class_basename($this->syncState->model_class);

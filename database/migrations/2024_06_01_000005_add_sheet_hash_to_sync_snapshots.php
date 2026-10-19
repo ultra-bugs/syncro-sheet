@@ -21,20 +21,27 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    public function up()
+    /**
+     * The tracking tables live on the connection TrackingDatabase resolved.
+     */
+    public function getConnection(): ?string
     {
-        Schema::table('sync_states', static function (Blueprint $table) {
-            $table->enum('sync_mode', \Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES)
-                ->default(\Zuko\SyncroSheet\Services\SyncManager::AVAILABLE_SYNC_MODES[0])
-                ->after('sync_type')
-                ->index();
+        return \Zuko\SyncroSheet\Services\TrackingDatabase::connectionName();
+    }
+
+    public function up(): void
+    {
+        Schema::table('sync_snapshots', static function (Blueprint $table) {
+            // Baseline of the sheet side; content_hash is the DB side's. Null
+            // (rows written before this column) = both sides share content_hash.
+            $table->string('sheet_hash')->nullable()->after('content_hash');
         });
     }
 
-    public function down()
+    public function down(): void
     {
-        Schema::table('sync_states', static function (Blueprint $table) {
-            $table->dropColumn('sync_mode');
+        Schema::table('sync_snapshots', static function (Blueprint $table) {
+            $table->dropColumn('sheet_hash');
         });
     }
 };

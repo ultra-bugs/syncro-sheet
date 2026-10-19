@@ -27,6 +27,14 @@ class TokenManager
     private const TOKEN_BUFFER = 300; // 5 minutes buffer before expiration
 
     /**
+     * The stored OAuth token (access_token, refresh_token, expires_at), if any.
+     */
+    public function getToken(): ?array
+    {
+        return Cache::get(self::CACHE_KEY);
+    }
+
+    /**
      * Check and refresh token if needed
      */
     public function refreshIfNeeded(): void

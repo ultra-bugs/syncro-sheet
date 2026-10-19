@@ -18,14 +18,18 @@
 namespace Zuko\SyncroSheet\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Zuko\SyncroSheet\Models\Concerns\UsesTrackingConnection;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class SyncState extends Model
 {
+    use UsesTrackingConnection;
+
     protected $fillable = [
         'model_class',
         'sync_type',
-        'sync_mode',
+        'direction',
+        'write_mode',
         'status',
         'started_at',
         'completed_at',
