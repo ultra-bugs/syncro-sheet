@@ -2,7 +2,7 @@
 
 ***Laravel package for efficient, bidirectional synchronization between Eloquent models and Google Sheets — with state tracking, conflict resolution, and scheduling.***
 
-**Last updated:** 2026-10-18 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
+**Last updated:** 2026-10-19 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
 
 > [!IMPORTANT]
 > Available on Packagist — install with `composer require zuko/syncro-sheet`.
@@ -46,6 +46,9 @@
   per-model `DataTransformer` (`sheetTransformer()`), read-only (formula)
   columns, hash-ignored columns
 - 🔢 Typed cells: numbers stay numbers, formulas and sheet-only columns survive
+- ✍️ Minimal sheet writes: a row typed on the sheet only gets its key, an edited
+  record only its changed cells
+- 🧪 Dry run of a two-way sync (`preview()`, `sheet:sync --direction=both --dry-run`)
 - 🗄️ Tracking tables kept apart from your data (own SQLite file by default)
 - 🚦 Quota-aware: client-side throttle + retry with backoff on 429 / 5xx
 - ✅ Verified end-to-end on the live API + PostgreSQL —
@@ -56,7 +59,7 @@
 - 🔁 Automatic retry mechanism with exponential backoff
 - 📊 Detailed sync history and progress tracking
 - 🚨 Comprehensive notification system
-- 🔑 Smart token management for Google API
+- 🔐 Google credentials in code (`SyncManager::configureUsing()`) or in config
 
 ## Requirements
 
@@ -191,7 +194,7 @@ where, on boot:
 | `database.connection` | `pdo_sqlite` | Tracking tables live in | Schema |
 |---|---|---|---|
 | set (e.g. `pgsql`) | — | that connection | `php artisan migrate` |
-| `null` | available | its own SQLite file (`storage/syncro-sheet/tracking.sqlite`, connection `syncro-sheet`, WAL) | created on first boot; pending migrations applied after every `php artisan migrate` and by `php artisan syncro-sheet:migrate` |
+| `null` | available | its own SQLite file (`storage/syncro-sheet/tracking.sqlite`, connection `syncro-sheet`, WAL) | created on first boot; migrations added by a package upgrade run on the next boot (marker `tracking.sqlite.schema`), after every `php artisan migrate`, and with `php artisan syncro-sheet:migrate` |
 | `null` | missing | the app's default connection | `php artisan migrate` — and a warning (at most once a day) on both the package log and the app's default log channel |
 
 > Upgrading from a version that kept them in the app database: set
@@ -220,12 +223,13 @@ class Product extends Model implements SheetExportable
 
     public function toSheetRow(): array
     {
+        // Header => value; a positional list needs defaultSheetHeaders() (see Sheet layout)
         return [
-            $this->id,
-            $this->name,
-            $this->price,
-            $this->stock,
-            $this->updated_at->format('Y-m-d H:i:s')
+            'id'         => $this->id,
+            'name'       => $this->name,
+            'price'      => (float) $this->price, // a number, not a decimal string
+            'stock'      => $this->stock,
+            'updated_at' => $this->updated_at->format('Y-m-d H:i:s'),
         ];
     }
 
