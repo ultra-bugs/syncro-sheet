@@ -2,7 +2,7 @@
 
 ***How SyncroSheet is put together — the components, how data flows DB ⇄ Sheet, and the run lifecycle.***
 
-**Last updated:** 2026-10-18 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
+**Last updated:** 2026-10-19 · verified against [`92ffcf4`](https://github.com/ultra-bugs/syncro-sheet/commit/92ffcf4e611b693e45e1f01be209d6f09c5d177a)
 
 > [!NOTE]
 > Two axes are easy to confuse: **direction** (`export` / `import` / `bidirectional`) is *which way data flows*, while **write_mode** (`append` / `replace`) is *how export writes the sheet*. `SheetSyncable` is a **bidirectional** model (`SheetExportable` + `SheetImportable`). `StateManager` owns run history (`SyncState` / `SyncEntry`) **and** the reconcile baseline (`SyncSnapshot`).
@@ -51,14 +51,14 @@ the overlapping-sounding terms.
 | **SheetSyncable** | interface | **Bidirectional** model — extends both of the above | old meaning (= export) |
 | **Exporter** | service | Engine DB→Sheet (chunked write) | Importer |
 | **Importer** | service | Engine Sheet→DB (chunked upsert by PK) | Exporter |
-| **Reconciler** | service | Two-way engine: `decide()` (read + diff baseline) + `apply()` | Exporter/Importer |
+| **Reconciler** | service | Two-way engine: `decide()` (read + diff baseline) + `applyChunk()`; `preview()` = counts only | Exporter/Importer |
 | **DataTransformer** | service | Value codec both ways + `canonicalHash` (no state, no I/O) | an orchestrator |
 | **StateManager** | service | Owns ALL tracking tables: SyncState + SyncEntry + SyncSnapshot | — |
 | **SyncState** | model | One run: direction, sync_type, write_mode, status, counters | SyncEntry |
 | **SyncEntry** | model | Per-record result within a run (audit/history) | SyncSnapshot |
 | **SyncSnapshot** | model | Current content-hash baseline per record and side (reconcile) | a per-run log |
 | **GoogleClient** | service | revolution wrapper: read/append/updateRows/headers/clear + rate limit | — |
-| **SyncManager** | service | Orchestrator/entry: fullSync/partialSync, importFull/importPartial, sync | SyncScheduler |
+| **SyncManager** | service | Orchestrator/entry: fullSync/partialSync, importFull/importPartial, sync, preview; static `configureUsing()` (Google client) | SyncScheduler |
 | **TrackingDatabase** | service | Resolves (in boot) where the tracking tables live: configured connection, own SQLite file, or app default (+ warning) | StateManager |
 | **canImportSheetRow / shouldImportSheetRow** | trait method / model hook | May a sheet row without a key become a record? | fromSheetRow() |
 | **getSheetTransformer / sheetTransformer** | trait method / model hook | The model's DataTransformer for writes, reads and hashes | the shared DataTransformer |
@@ -110,6 +110,7 @@ declares what it needs:
 | Method | Used by | Effect |
 |---|---|---|
 | `getBatchSize(): int` | Exporter, Importer | chunk size (default `defaults.batch_size`) |
+| `getPreferredWriteMode(): ?string` | SyncManager | export `append` / `replace` (default `defaults.export.write_mode`; the command's `--mode` / `--force` wins) |
 | `defaultSheetHeaders(): array` | all engines | names the positions of a positional `toSheetRow()` (`''` = not ours) |
 | `syncReadOnlyColumns(): array` | Reconciler | written on append only; never overwritten; out of the hash |
 | `syncHashIgnore(): array` | Reconciler | columns left out of change detection (default `reconcile.hash_ignore`) |
@@ -206,6 +207,7 @@ class SyncState extends Model
         'completed_at',
         'total_processed',
         'last_processed_id',
+        'error_message',
     ];
 }
 
@@ -218,7 +220,8 @@ class SyncEntry extends Model
         'synced_at',
         'sync_state_id',    // Reference to parent SyncState
         'sync_type',        // 'full' or 'partial'
-        'status'            // 'success' or 'failed'
+        'status',           // 'success' or 'failed'
+        'error_message',
     ];
 
     protected $casts = [
@@ -306,8 +309,9 @@ Top-level keys (defaults in [`config/syncro-sheet.php`](../config/syncro-sheet.p
 #### `TrackingDatabase`
 - In the provider's `boot()`: `syncro-sheet.database.connection` when set;
   else connection `syncro-sheet` = own SQLite file when `pdo_sqlite` is
-  loaded (schema created on first boot, migrated after each `migrate` and by
-  `syncro-sheet:migrate`); else the app default, with a warning on the package
+  loaded (schema created on first boot; migrations added by a package upgrade
+  run on the next boot (marker `tracking.sqlite.schema`), after each `migrate`
+  and by `syncro-sheet:migrate`); else the app default, with a warning on the package
   log and the app's default channel.
 - Tracking models (`UsesTrackingConnection`), `StateManager`, `ErrorHandler`
   and the package migrations use the resolved connection; no query joins a
@@ -319,7 +323,7 @@ Surfaces that trigger a sync and the component each one drives.
 
 | Surface | File | Drives |
 |---|---|---|
-| `sheet:sync {model} --direction` | [@SheetSyncCommand.php](../src/Console/Commands/SheetSyncCommand.php) | `SyncManager::fullSync` / `importFull` / `sync` |
+| `sheet:sync {model} --direction` | [@SheetSyncCommand.php](../src/Console/Commands/SheetSyncCommand.php) | `SyncManager::fullSync` / `importFull` / `sync`; with `--ids`: `partialSync` / `importPartial`; `--direction=both --dry-run`: `preview` |
 | `sheet:scheduled-sync` | [@ScheduledSyncCommand.php](../src/Console/Commands/ScheduledSyncCommand.php) | `SyncScheduler::run` → driver |
 | `syncro-sheet:migrate` | [@MigrateTrackingCommand.php](../src/Console/Commands/MigrateTrackingCommand.php) | `TrackingDatabase::migrate` (own SQLite file) |
 | `PartialSyncJob` | [@PartialSyncJob.php](../src/Jobs/PartialSyncJob.php) | `SyncManager::partialSync` (export chunk) |
@@ -523,6 +527,10 @@ stateDiagram-v2
 | **NOTE** | Model hooks (import gate, per-model transformer) + tracking connection | [@20261018_model-hooks-and-tracking-connection.md](agent-plans/20261018_model-hooks-and-tracking-connection.md) |
 | **NOTE** | Key by column index; rows without a key are created and get their key written back | [@20261018_sheet-key-column-index.md](agent-plans/20261018_sheet-key-column-index.md) |
 | **NOTE** | Real-run defects and their fixes (positional rows, append anchoring, typed values, guarded keys, soft deletes, read-only columns) | [@20261018_real-run-fixes.md](agent-plans/20261018_real-run-fixes.md) |
+| **NOTE** | Runs stuck at `running` (any `Throwable` fails the run, abandoned runs ended) + package-scoped credentials | [@20261018_failed-runs-and-credentials.md](agent-plans/20261018_failed-runs-and-credentials.md) |
+| **NOTE** | Rehearsal on a copy of a production tab: per-side baselines, `readRows()` spans, cell-level writes, dry run | [@20261018_production-tab-rehearsal.md](agent-plans/20261018_production-tab-rehearsal.md) |
+| **NOTE** | `SyncManager::configureUsing()`: Google client configured in code | [@20261018_configure-using.md](agent-plans/20261018_configure-using.md) |
+| **NOTE** | First run at scale: creates committed per chunk, one reload query per chunk, batched tracking writes | [@20261018_first-run-at-scale.md](agent-plans/20261018_first-run-at-scale.md) |
 | **REVIEW** | Only numeric primary keys are supported — `sync_entries.record_id` / `sync_snapshots.record_id` are `bigInteger`. | [@create_sync_entries_table.php](../database/migrations/2024_06_01_000001_create_sync_entries_table.php) |
 
 - When docs drift from code, log it centrally at `docs/need-reviews/code-doc-missmatch.md` (repo root) and link here instead of duplicating.
